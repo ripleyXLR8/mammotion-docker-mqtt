@@ -1,0 +1,2 @@
+pymammotion>=0.7.31
+aiomqtt>=2.0.0
