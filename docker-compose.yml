@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  mammotion2mqtt:
+    build: .
+    container_name: mammotion2mqtt
+    restart: unless-stopped
+    environment:
+      # Identifiants Mammotion
+      - MAMMOTION_EMAIL=votre_email@domaine.com
+      - MAMMOTION_PASSWORD=votre_mot_de_passe
+      
+      # Configuration du broker MQTT local (ex: Mosquitto)
+      - MQTT_BROKER=192.168.1.100
+      - MQTT_PORT=1883
+      - MQTT_USER=votre_user_mqtt
+      - MQTT_PASSWORD=votre_password_mqtt
