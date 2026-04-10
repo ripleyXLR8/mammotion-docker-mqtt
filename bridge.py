@@ -26,7 +26,7 @@ async def main():
     logger.info("Connexion au Cloud Mammotion...")
     await mammotion.login_and_initiate_cloud(MAMMOTION_EMAIL, MAMMOTION_PASSWORD)
     
-    # Laisser le temps au client de récupérer les appareils
+    # Laisser le temps au client de récupérer les appareils et leur premier état
     await asyncio.sleep(5)
     
     devices = mammotion.device_registry.all_devices
@@ -46,20 +46,29 @@ async def main():
         password=MQTT_PASSWORD
     ) as mqtt_client:
         
-        # Callback pour remonter l'état de la tondeuse vers MQTT
+        # --- NOUVEAUTÉ 1 : Publication immédiate de l'état complet au démarrage ---
+        for dev_name in device_names:
+            handle = mammotion.device_registry.get_by_name(dev_name)
+            if handle and handle.snapshot.raw:
+                try:
+                    # to_json() génère tout le dictionnaire de la tondeuse d'un coup
+                    full_state = handle.snapshot.raw.to_json()
+                    await mqtt_client.publish(f"mammotion/{dev_name}/state", full_state, retain=True)
+                    logger.info(f"État initial publié sur MQTT pour {dev_name}")
+                except Exception as e:
+                    logger.error(f"Erreur lors de la publication initiale pour {dev_name}: {e}")
+
+        # Callback pour remonter les mises à jour d'état vers MQTT
         def make_state_callback(dev_name):
             async def on_message(msg):
                 handle = mammotion.device_registry.get_by_name(dev_name)
-                if handle:
-                    # Extraction des données utiles via le snapshot
-                    state = handle.snapshot.raw
-                    payload = {
-                        "device": dev_name,
-                        "battery": getattr(state, 'charge_state', None),
-                        "sys_status": getattr(state, 'sys_status', None),
-                        "mode": getattr(state, 'work_mode', None),
-                    }
-                    await mqtt_client.publish(f"mammotion/{dev_name}/state", json.dumps(payload))
+                if handle and handle.snapshot.raw:
+                    try:
+                        # --- NOUVEAUTÉ 2 : Envoi de l'état complet à chaque MAJ ---
+                        full_state = handle.snapshot.raw.to_json()
+                        await mqtt_client.publish(f"mammotion/{dev_name}/state", full_state, retain=True)
+                    except Exception as e:
+                        logger.error(f"Erreur lors de la maj d'état pour {dev_name}: {e}")
             return on_message
 
         # Abonnement aux événements Mammotion pour chaque tondeuse
@@ -73,7 +82,7 @@ async def main():
             # S'abonner au topic de commande MQTT local pour cette tondeuse
             await mqtt_client.subscribe(f"mammotion/{dev_name}/set")
 
-        logger.info("Prêt. En attente des commandes MQTT...")
+        logger.info("Prêt. En attente des événements et des commandes MQTT...")
 
         # 3. Écoute des commandes MQTT pour piloter la tondeuse
         async for message in mqtt_client.messages:
