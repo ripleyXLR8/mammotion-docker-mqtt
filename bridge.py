@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import signal
 from typing import Any
@@ -143,8 +144,8 @@ async function refresh(){let p;try{p=await getpos();}catch(e){set('position indi
   if(!p||!p.mower||p.mower[0]==null){set('pas de position');return;}
   const lat=p.mower[0],lon=p.mower[1];ensureMap(lat,lon);
   if(!mower){mower=L.marker([lat,lon]).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng([lat,lon]);}
-  if(p.dock&&p.dock[0]!=null){if(!dock){dock=L.circleMarker(p.dock,{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base');}else{dock.setLatLng(p.dock);}}
-  set(p.anchor_src?'':'position approximative (sans référence absolue)');}
+  if(p.base&&p.base[0]!=null){if(!dock){dock=L.circleMarker(p.base,{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base RTK');}else{dock.setLatLng(p.base);}}
+  set(p.mower_src==='device_gps'?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (montrée à la base)':'position approximative'));}
 refresh();setInterval(refresh,15000);
 </script></body></html>"""
 
@@ -244,38 +245,42 @@ class Bridge:
     async def http_map(self, request: web.Request) -> web.Response:
         return web.Response(text=MAP_HTML, content_type="text/html")
 
+    def _rtk_base_abs(self, rtk: dict[str, Any] | None) -> list[float] | None:
+        """Position absolue de la base RTK. ``location.RTK`` est en RADIANS
+        (0.855 rad ≈ 49°) ; on convertit en degrés. Sert de repère « base »."""
+        if not rtk or rtk.get("lat") is None:
+            return None
+        lat, lon = rtk["lat"], rtk["lon"]
+        try:
+            dlat, dlon = math.degrees(float(lat)), math.degrees(float(lon))
+        except (TypeError, ValueError):
+            return None
+        if self._plausible_abs(dlat, dlon):
+            return [dlat, dlon]
+        if self._plausible_abs(lat, lon):  # déjà en degrés, au cas où
+            return [float(lat), float(lon)]
+        return None
+
     async def http_position(self, request: web.Request) -> web.Response:
         name = request.query.get("device") or self._first_mower()
         raw = self._raw_location(name) if name else None
         dev = raw.get("device") if raw else None
         rtk = raw.get("RTK") if raw else None
-        dock = raw.get("dock") if raw else None
-        # Ancre absolue : d'abord la base RTK si elle porte une vraie position,
-        # sinon l'ancre du jardin (env GARDEN_ANCHOR / config maison Jeedom).
-        anchor: tuple[float, float] | None = None
-        anchor_src: str | None = None
-        if rtk and self._plausible_abs(rtk["lat"], rtk["lon"]):
-            anchor = (float(rtk["lat"]), float(rtk["lon"]))
-            anchor_src = "rtk_base"
-        elif GARDEN_ANCHOR:
-            anchor = GARDEN_ANCHOR
-            anchor_src = "anchor_env"
-
-        def combine(offpt: dict[str, Any] | None) -> list[float] | None:
-            if offpt is None or offpt.get("lat") is None:
-                return None
-            olat, olon = offpt["lat"], offpt["lon"]
-            if self._plausible_abs(olat, olon):
-                return [float(olat), float(olon)]  # déjà absolu
-            if anchor:
-                return [anchor[0] + float(olat or 0), anchor[1] + float(olon or 0)]
-            return [float(olat or 0), float(olon or 0)]
-
+        base = self._rtk_base_abs(rtk)
+        anchor = base or (list(GARDEN_ANCHOR) if GARDEN_ANCHOR else None)
+        # ``device`` est en degrés absolus dès qu'il y a un fix RTK ; sans fix il est
+        # proche de 0 → on montre alors la tondeuse à la base (ou à l'ancre).
+        if dev and self._plausible_abs(dev.get("lat"), dev.get("lon")):
+            mower, mower_src = [float(dev["lat"]), float(dev["lon"])], "device_gps"
+        elif anchor:
+            mower, mower_src = anchor, ("base_no_fix" if base else "anchor_env")
+        else:
+            mower, mower_src = None, None
         return web.json_response({
-            "mower": combine(dev),
-            "dock": combine(dock),
-            "anchor": list(anchor) if anchor else None,
-            "anchor_src": anchor_src,
+            "mower": mower,
+            "mower_src": mower_src,
+            "base": base,
+            "anchor_env": list(GARDEN_ANCHOR) if GARDEN_ANCHOR else None,
             "raw": raw,
         })
 
