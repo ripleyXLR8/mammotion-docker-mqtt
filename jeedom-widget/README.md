@@ -84,3 +84,11 @@ absolue, renseigne `GARDEN_ANCHOR=lat,lon` (voir README principal).
 (`start_map_sync`) et sert le GeoJSON des aires/obstacles/chemins sur `/zones`
 (chaque `properties` porte le style Leaflet). La page carte les dessine
 (`L.geoJSON`) et cadre la vue sur leur emprise. Les aires apparaissent en vert.
+
+**Fond satellite + recalage** : sélecteur OSM/Satellite (Esri, sans clef). Le RTK
+étant centimétrique en relatif mais à quelques mètres près en absolu, un bouton
+**« Recaler la zone »** fait apparaître une poignée à glisser sur la vraie base ;
+« Enregistrer » envoie `POST /offset`, mémorisé côté serveur en **MQTT retenu**
+(`mammotion/config/map_offset`) — donc persistant et appliqué partout (tuile, tous
+appareils). Sans fix RTK (tondeuse en veille), la dernière position/base valides
+sont mises en cache pour ne pas vider la carte.
