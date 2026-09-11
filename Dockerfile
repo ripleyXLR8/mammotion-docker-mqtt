@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 # Installation de tini et nettoyage du cache apt pour réduire la taille de l'image
 RUN apt-get update && \
