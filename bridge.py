@@ -52,6 +52,21 @@ AGORA_SDK_URL = os.environ.get("AGORA_SDK_URL", "https://cdn.jsdelivr.net/npm/ag
 HA_VERSION = os.environ.get("MAMMOTION_HA_VERSION", "0.6.4")
 CHARGING_STATES = (1, 2)
 
+
+def _parse_latlon(value: str) -> tuple[float, float] | None:
+    try:
+        a, b = value.split(",")
+        return (float(a.strip()), float(b.strip()))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Ancre géographique absolue (lat,lon) du jardin/base. Les coordonnées de la
+# tondeuse sont RELATIVES à la base RTK (offset de quelques mètres, ~1e-5°), pas du
+# GPS absolu ; on ajoute l'offset à l'ancre pour obtenir une position affichable sur
+# une carte. Sans ancre, /position renvoie l'offset brut (carte centrée sur 0,0).
+GARDEN_ANCHOR = _parse_latlon(os.environ.get("GARDEN_ANCHOR", ""))
+
 # Commandes-boutons : clé → (méthode MammotionCommand, kwargs, libellé).
 COMMANDS: dict[str, tuple[str, dict[str, Any], str]] = {
     "start": ("start_job", {}, "Démarrer la tonte"),
@@ -107,6 +122,30 @@ async function start(){
 }
 start();
 window.addEventListener('beforeunload',()=>{if(ka)clearInterval(ka);if(renew)clearInterval(renew);if(client)client.leave().catch(()=>{});});
+</script></body></html>"""
+
+# Page carte : Leaflet + tuiles OpenStreetMap (aucune clef d'API). Récupère la
+# position via /position et place la tondeuse (et la base). Rafraîchit seul.
+MAP_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Carte tondeuse</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>html,body{margin:0;height:100%}#map{width:100%;height:100%;min-height:180px;background:#aad3df}
+#st{position:absolute;z-index:1000;top:6px;left:8px;font:12px sans-serif;background:rgba(0,0,0,.55);color:#fff;padding:2px 6px;border-radius:4px}</style>
+</head><body><div id="map"></div><div id="st">chargement…</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script><script>
+const base=location.pathname.replace(/\/map$/,'');
+const st=document.getElementById('st');const set=t=>{st.textContent=t;st.style.display=t?'':'none';};
+let map,mower,dock;
+async function getpos(){const r=await fetch(base+'/position');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+function ensureMap(lat,lon){if(map)return;map=L.map('map').setView([lat,lon],19);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);}
+async function refresh(){let p;try{p=await getpos();}catch(e){set('position indisponible');return;}
+  if(!p||!p.mower||p.mower[0]==null){set('pas de position');return;}
+  const lat=p.mower[0],lon=p.mower[1];ensureMap(lat,lon);
+  if(!mower){mower=L.marker([lat,lon]).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng([lat,lon]);}
+  if(p.dock&&p.dock[0]!=null){if(!dock){dock=L.circleMarker(p.dock,{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base');}else{dock.setLatLng(p.dock);}}
+  set(p.anchor_src?'':'position approximative (sans référence absolue)');}
+refresh();setInterval(refresh,15000);
 </script></body></html>"""
 
 # Réglages-curseurs : clé → (méthode, nom d'argument, type, min, max, pas, unité, libellé).
@@ -175,6 +214,71 @@ class Bridge:
         html = PLAYER_HTML.replace("{{AGORA_SDK_URL}}", AGORA_SDK_URL)
         return web.Response(text=html, content_type="text/html")
 
+    # ---- carte : position absolue de la tondeuse --------------------------
+    def _raw_location(self, name: str) -> dict[str, Any] | None:
+        dev = self.client.get_device_by_name(name)
+        loc = getattr(dev, "location", None) if dev else None
+        if loc is None:
+            return None
+
+        def pt(o: Any) -> dict[str, Any] | None:
+            if o is None:
+                return None
+            return {"lat": getattr(o, "latitude", None),
+                    "lon": getattr(o, "longitude", None),
+                    "yaw": getattr(o, "yaw", None)}
+
+        return {"device": pt(getattr(loc, "device", None)),
+                "RTK": pt(getattr(loc, "RTK", None)),
+                "dock": pt(getattr(loc, "dock", None)),
+                "position_type": getattr(loc, "position_type", None)}
+
+    @staticmethod
+    def _plausible_abs(lat: Any, lon: Any) -> bool:
+        """Vraie coordonnée absolue (pas un offset proche de 0 ni du bruit)."""
+        try:
+            return lat is not None and lon is not None and 1.0 < abs(float(lat)) <= 90.0 and abs(float(lon)) <= 180.0
+        except (TypeError, ValueError):
+            return False
+
+    async def http_map(self, request: web.Request) -> web.Response:
+        return web.Response(text=MAP_HTML, content_type="text/html")
+
+    async def http_position(self, request: web.Request) -> web.Response:
+        name = request.query.get("device") or self._first_mower()
+        raw = self._raw_location(name) if name else None
+        dev = raw.get("device") if raw else None
+        rtk = raw.get("RTK") if raw else None
+        dock = raw.get("dock") if raw else None
+        # Ancre absolue : d'abord la base RTK si elle porte une vraie position,
+        # sinon l'ancre du jardin (env GARDEN_ANCHOR / config maison Jeedom).
+        anchor: tuple[float, float] | None = None
+        anchor_src: str | None = None
+        if rtk and self._plausible_abs(rtk["lat"], rtk["lon"]):
+            anchor = (float(rtk["lat"]), float(rtk["lon"]))
+            anchor_src = "rtk_base"
+        elif GARDEN_ANCHOR:
+            anchor = GARDEN_ANCHOR
+            anchor_src = "anchor_env"
+
+        def combine(offpt: dict[str, Any] | None) -> list[float] | None:
+            if offpt is None or offpt.get("lat") is None:
+                return None
+            olat, olon = offpt["lat"], offpt["lon"]
+            if self._plausible_abs(olat, olon):
+                return [float(olat), float(olon)]  # déjà absolu
+            if anchor:
+                return [anchor[0] + float(olat or 0), anchor[1] + float(olon or 0)]
+            return [float(olat or 0), float(olon or 0)]
+
+        return web.json_response({
+            "mower": combine(dev),
+            "dock": combine(dock),
+            "anchor": list(anchor) if anchor else None,
+            "anchor_src": anchor_src,
+            "raw": raw,
+        })
+
     async def start_http(self) -> None:
         app = web.Application()
         prefixes = [""]
@@ -189,6 +293,8 @@ class Bridge:
                 web.get(f"{p}/player", self.http_index),
                 web.get(f"{p}/tokens", self.http_tokens),
                 web.get(f"{p}/keepalive", self.http_keepalive),
+                web.get(f"{p}/map", self.http_map),
+                web.get(f"{p}/position", self.http_position),
             ]
         app.add_routes(routes)
         runner = web.AppRunner(app)

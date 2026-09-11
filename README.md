@@ -34,6 +34,7 @@ l'autre en boucle. La bonne pratique :
 | `HTTP_PORT` | `8099` | port du lecteur caméra FPV (page + jetons/keepalive) |
 | `BASE_PATH` | *(vide)* | sous-chemin de service derrière un reverse proxy qui **ne retire pas** le préfixe, ex. `/mammocam` → sert aussi `/mammocam/`, `/mammocam/tokens`, `/mammocam/keepalive`. Indispensable pour intégrer la tuile caméra dans un Jeedom servi en HTTPS (évite le blocage *mixed-content*) |
 | `AGORA_SDK_URL` | CDN jsdelivr | URL du SDK Agora Web chargé par le lecteur |
+| `GARDEN_ANCHOR` | *(vide)* | ancre géographique absolue `lat,lon` du jardin/base. Les coordonnées de la tondeuse sont **relatives à la base RTK** (offset ~1e-5°) : sans ancre absolue elles tombent près de `0,0`. Utilisé par la page carte `/map` (voir `/position`). Le pont préfère la position absolue de la base RTK si le device la fournit, sinon cette ancre. |
 | `MAMMOTION_HA_VERSION` | `0.6.4` | **doit être un vrai numéro de version** : le serveur en dérive l'en-tête App-Version et refuse le login sinon (renvoyé, à tort, comme « Account or password mismatch ») |
 
 ## Ce qui est exposé
