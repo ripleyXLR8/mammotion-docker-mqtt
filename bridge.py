@@ -58,7 +58,19 @@ COMMANDS: dict[str, tuple[str, dict[str, Any], str]] = {
     "blade_off": ("set_blade_control", {"on_off": 0}, "Lame OFF"),
     "restart": ("remote_restart", {"force_reset": 1}, "Redémarrer la tondeuse"),
     "reset_blade_time": ("reset_blade_time", {}, "Réinitialiser l'usure des lames"),
+    # Conduite manuelle (à-coups 0.4 comme l'app ; via cloud → latence). Stop = vitesses nulles.
+    "forward": ("move_forward", {"linear": 0.4}, "Avancer"),
+    "back": ("move_back", {"linear": 0.4}, "Reculer"),
+    "left": ("move_left", {"angular": 0.4}, "Tourner à gauche"),
+    "right": ("move_right", {"angular": 0.4}, "Tourner à droite"),
+    "stop_move": ("send_movement", {"linear_speed": 0, "angular_speed": 0}, "Stop (conduite)"),
+    # Debug de l'appareil
+    "debug_on": ("set_debug_enable", {"enable": 1}, "Debug ON"),
+    "debug_off": ("set_debug_enable", {"enable": 0}, "Debug OFF"),
 }
+
+# Niveau de position RTK (report_data.rtk.pos_level).
+RTK_LEVELS = {0: "Aucune position", 1: "RTK fixe", 2: "RTK + vision", 3: "Vision seule"}
 
 # Réglages-curseurs : clé → (méthode, nom d'argument, type, min, max, pas, unité, libellé).
 # Plages prudentes pour un LUBA 2 AWD — à affiner si besoin.
@@ -124,6 +136,17 @@ class Bridge:
         if loc is not None and getattr(loc, "device", None) is not None:
             fields["latitude"] = getattr(loc.device, "latitude", None)
             fields["longitude"] = getattr(loc.device, "longitude", None)
+        # Réseau + RTK
+        conn = getattr(rd, "connect", None)
+        rtk = getattr(rd, "rtk", None)
+        ms2 = getattr(dev, "mowing_state", None)
+        fields["wifi_rssi"] = getattr(conn, "wifi_rssi", None) if conn else None
+        fields["mnet_rssi"] = getattr(conn, "mnet_rssi", None) if conn else None
+        fields["satellites"] = getattr(ms2, "satellites_total", None) if ms2 else None
+        fields["rtk_age"] = getattr(rtk, "age", None) if rtk else None
+        if rtk is not None:
+            lvl = getattr(rtk, "pos_level", 0)
+            fields["rtk_level"] = RTK_LEVELS.get(lvl, str(lvl))
         return fields
 
     def _number_values(self, name: str) -> dict[str, Any]:
@@ -169,6 +192,11 @@ class Bridge:
             ("error", "Erreur", None, None, "mdi:alert-circle-outline"),
             ("latitude", "Latitude", None, "°", None),
             ("longitude", "Longitude", None, "°", None),
+            ("wifi_rssi", "WiFi RSSI", "signal_strength", "dBm", None),
+            ("mnet_rssi", "4G RSSI", "signal_strength", "dBm", None),
+            ("satellites", "Satellites", None, None, "mdi:satellite-variant"),
+            ("rtk_level", "Niveau RTK", None, None, "mdi:crosshairs-gps"),
+            ("rtk_age", "Âge RTK", None, "s", "mdi:timer-outline"),
         ]
         binaries = [
             ("charging", "En charge", "battery_charging"),
