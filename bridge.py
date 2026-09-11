@@ -103,13 +103,17 @@ class Bridge:
         work = getattr(rd, "work", None)
         errs = getattr(dev, "errors", None)
         err_list = list(getattr(errs, "err_code_list", []) or []) if errs else []
+        # La progression n'est un pourcentage qu'en cours de tonte ; hors plage
+        # (valeurs internes négatives à l'arrêt) → 0.
+        raw_progress = getattr(work, "progress", 0) if work else 0
+        progress = raw_progress if isinstance(raw_progress, (int, float)) and 0 <= raw_progress <= 100 else 0
         fields: dict[str, Any] = {
             "online": "online" if getattr(dev, "online", True) else "offline",
             "status": device_mode(getattr(d, "sys_status", 0)) if d else "MODE_OFFLINE",
             "battery": getattr(d, "battery_val", None) if d else None,
             "charging": "ON" if (d and getattr(d, "charge_state", 0) in CHARGING_STATES) else "OFF",
             "blade": "ON" if getattr(dev.mower_state, "blade_status", False) else "OFF",
-            "progress": getattr(work, "progress", None) if work else None,
+            "progress": progress,
             "network": device_connection(rd.connect) if getattr(rd, "connect", None) else None,
             "error": ", ".join(str(e) for e in err_list) if err_list else "aucune",
         }
