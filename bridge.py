@@ -126,6 +126,20 @@ class Bridge:
             fields["longitude"] = getattr(loc.device, "longitude", None)
         return fields
 
+    def _number_values(self, name: str) -> dict[str, Any]:
+        """Valeurs courantes des réglages (best-effort ; 0 à l'arrêt pour certains)."""
+        dev = self.client.get_device_by_name(name)
+        if dev is None:
+            return {}
+        ms = getattr(dev, "mower_state", None)
+        work = getattr(getattr(dev, "report_data", None), "work", None)
+        audio = getattr(ms, "audio", None) if ms else None
+        return {
+            "blade_height": getattr(work, "knife_height", None) if work else None,
+            "speed": getattr(ms, "travel_speed", None) if ms else None,
+            "volume": getattr(audio, "volume", None) if audio else None,
+        }
+
     async def publish_state(self) -> None:
         if self.mqtt is None:
             return
@@ -139,6 +153,9 @@ class Bridge:
                 if key == "online" or value is None:
                     continue
                 await self.mqtt.publish(f"{base}/{key}", value, retain=True)
+            for key, value in self._number_values(name).items():
+                if value is not None:
+                    await self.mqtt.publish(f"{base}/num/{key}/state", value, retain=True)
 
     # ---- découverte MQTT ---------------------------------------------------
     async def publish_discovery(self) -> None:
@@ -199,6 +216,7 @@ class Bridge:
             for key, (_m, _a, _c, mn, mx, step, unit, label) in NUMBERS.items():
                 cfg = {"name": label, "unique_id": f"{slug}_{key}",
                        "command_topic": f"{base}/num/{key}/set",
+                       "state_topic": f"{base}/num/{key}/state",
                        "min": mn, "max": mx, "step": step, "unit_of_measurement": unit,
                        "mode": "slider", "device": device_block, **avail}
                 await self.mqtt.publish(
