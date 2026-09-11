@@ -151,8 +151,10 @@ const base=location.pathname.replace(/\/map$/,'');
 const st=document.getElementById('st');const set=t=>{st.textContent=t;st.style.display=t?'':'none';};
 const bMv=document.getElementById('mv'),bSv=document.getElementById('sv'),bCn=document.getElementById('cn');
 let map,mower,dock,zones,fitted,zRaw,srv=[0,0],pend=[0,0],handle,mLL,bLL;
-const mowerIcon=L.divIcon({className:'mower-ic',iconSize:[42,42],iconAnchor:[21,21],popupAnchor:[0,-15],
-  html:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="42" height="42"><ellipse cx="24" cy="43" rx="13" ry="2.6" fill="rgba(0,0,0,.28)"/><rect x="6" y="12" width="5" height="9" rx="2" fill="#2b2b2b"/><rect x="37" y="12" width="5" height="9" rx="2" fill="#2b2b2b"/><rect x="6" y="27" width="5" height="9" rx="2" fill="#2b2b2b"/><rect x="37" y="27" width="5" height="9" rx="2" fill="#2b2b2b"/><rect x="9" y="7" width="30" height="34" rx="11" fill="#f4f4f2" stroke="#8a8f94" stroke-width="1.5"/><path d="M13 20 q0-8 11-8 q11 0 11 8 v9 q0 6-11 6 q-11 0-11-6 z" fill="#e3e5e7"/><rect x="15" y="21" width="18" height="5" rx="2.5" fill="#3a3f44"/><rect x="17" y="30" width="14" height="2.4" rx="1.2" fill="#8bc34a"/><circle cx="24" cy="14" r="2.4" fill="#3a3f44"/></svg>`});
+// Icône façon app Mammotion : corps blanc rond, 4 roues sombres, triangle rouge
+// de cap, l'ensemble pivoté selon le cap (degrés, 0 = nord).
+function mowerIcon(deg){return L.divIcon({className:'mower-ic',iconSize:[44,44],iconAnchor:[22,22],popupAnchor:[0,-16],
+  html:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="44" height="44"><g transform="rotate(${(deg||0)} 24 26)"><path d="M24 3 l5.5 9.5 h-11 z" fill="#e53935"/><circle cx="24" cy="26" r="12.5" fill="#ffffff" stroke="#9aa0a6" stroke-width="1.6"/><circle cx="15.5" cy="19" r="2.5" fill="#2b2b2b"/><circle cx="32.5" cy="19" r="2.5" fill="#2b2b2b"/><circle cx="15.5" cy="33" r="2.5" fill="#2b2b2b"/><circle cx="32.5" cy="33" r="2.5" fill="#2b2b2b"/></g></svg>`});}
 async function getj(u){const r=await fetch(base+u);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 function P(ll){return [ll[0]+pend[0],ll[1]+pend[1]];}
 function shift(g){if(pend[0]===0&&pend[1]===0)return g;
@@ -175,7 +177,9 @@ async function loadZones(){let z;try{z=await getj('/zones');}catch(e){return;}
 async function refresh(){if(handle)return;let p;try{p=await getj('/position');}catch(e){set('position indisponible');return;}
   if(!p||!p.mower||p.mower[0]==null){set('pas de position');return;}
   srv=p.offset||[0,0];mLL=p.mower;bLL=p.base;ensureMap(p.mower[0],p.mower[1]);if(!zRaw)loadZones();
-  if(!mower){mower=L.marker(P(mLL),{icon:mowerIcon}).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng(P(mLL));}
+  var hd=(p.heading==null?0:p.heading);
+  if(!mower){mower=L.marker(P(mLL),{icon:mowerIcon(hd)}).addTo(map).bindPopup('Tondeuse');mower._hd=hd;}
+  else{mower.setLatLng(P(mLL));if(mower._hd!==hd){mower.setIcon(mowerIcon(hd));mower._hd=hd;}}
   if(bLL&&bLL[0]!=null){if(!dock){dock=L.circleMarker(P(bLL),{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base RTK');}else{dock.setLatLng(P(bLL));}}
   set((p.mower_src==='device_gps'||p.mower_src==='device_cached')?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (à la base)':'position approx.'));}
 function endMove(){if(handle){handle.remove();handle=null;}if(map)map.dragging.enable();bMv.classList.remove('h');bSv.classList.add('h');bCn.classList.add('h');}
@@ -329,7 +333,8 @@ class Bridge:
         return {"device": pt(getattr(loc, "device", None)),
                 "RTK": pt(getattr(loc, "RTK", None)),
                 "dock": pt(getattr(loc, "dock", None)),
-                "position_type": getattr(loc, "position_type", None)}
+                "position_type": getattr(loc, "position_type", None),
+                "orientation": getattr(loc, "orientation", None)}
 
     @staticmethod
     def _plausible_abs(lat: Any, lon: Any) -> bool:
@@ -394,10 +399,17 @@ class Bridge:
             mower, mower_src = anchor, ("base_no_fix" if base else "anchor_env")
         else:
             mower, mower_src = None, None
+        # Cap de la tondeuse en degrés : `location.orientation` (alimenté par
+        # `real_toward/10000` ou `mowing_state.toward`). C'est ce que l'app affiche.
+        heading = getattr(loc, "orientation", None) if loc else None
+        if heading is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                heading = float(heading) % 360
         raw = self._raw_location(name)
         return web.json_response({
             "mower": _off_latlon(mower, self.map_offset),
             "mower_src": mower_src,
+            "heading": heading,
             "base": _off_latlon(base, self.map_offset),
             "anchor_env": list(GARDEN_ANCHOR) if GARDEN_ANCHOR else None,
             "offset": list(self.map_offset),
