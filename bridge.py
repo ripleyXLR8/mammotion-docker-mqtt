@@ -67,6 +67,11 @@ def _parse_latlon(value: str) -> tuple[float, float] | None:
 # GPS absolu ; on ajoute l'offset à l'ancre pour obtenir une position affichable sur
 # une carte. Sans ancre, /position renvoie l'offset brut (carte centrée sur 0,0).
 GARDEN_ANCHOR = _parse_latlon(os.environ.get("GARDEN_ANCHOR", ""))
+# Correction d'alignement (dlat,dlon en degrés) appliquée à TOUT (tondeuse, base,
+# zones) pour recaler l'ensemble sur le monde réel : le RTK est centimétrique en
+# relatif mais l'ancrage absolu (position GPS brute de la base) est à quelques
+# mètres près. À régler en visuel sur le fond satellite. Défaut = pas de correction.
+MAP_OFFSET = _parse_latlon(os.environ.get("MAP_OFFSET", "")) or (0.0, 0.0)
 
 # Commandes-boutons : clé → (méthode MammotionCommand, kwargs, libellé).
 COMMANDS: dict[str, tuple[str, dict[str, Any], str]] = {
@@ -138,8 +143,15 @@ const base=location.pathname.replace(/\/map$/,'');
 const st=document.getElementById('st');const set=t=>{st.textContent=t;st.style.display=t?'':'none';};
 let map,mower,dock,zones,zonesFitted;
 async function getj(u){const r=await fetch(base+u);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
-function ensureMap(lat,lon){if(map)return;map=L.map('map').setView([lat,lon],19);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);loadZones();}
+function ensureMap(lat,lon){if(map)return;
+  var sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:21,maxNativeZoom:19,attribution:'Esri, Maxar, Earthstar Geographics'});
+  var osm=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:21,maxNativeZoom:19,attribution:'© OpenStreetMap'});
+  map=L.map('map',{layers:[sat]}).setView([lat,lon],19);
+  L.control.layers({'Satellite':sat,'Plan (OSM)':osm},null,{collapsed:true}).addTo(map);
+  if(new URLSearchParams(location.search).get('cal')){map.on('click',function(e){
+    var ref=dock?dock.getLatLng():(mower?mower.getLatLng():null);if(!ref)return;
+    st.style.display='';st.textContent='MAP_OFFSET='+(e.latlng.lat-ref.lat).toFixed(7)+','+(e.latlng.lng-ref.lng).toFixed(7);});}
+  loadZones();}
 async function loadZones(){let z;try{z=await getj('/zones');}catch(e){return;}
   if(!z||!z.features||!z.features.length)return;
   if(zones){zones.remove();}
@@ -173,6 +185,39 @@ def slugify(value: str) -> str:
 def is_mower(name: str) -> bool:
     """Une tondeuse (par opposition à une base RTK) : nom Luba/Yuka/Mammotion."""
     return name.lower().startswith(("luba", "yuka", "mammotion"))
+
+
+def _has_offset() -> bool:
+    return MAP_OFFSET[0] != 0.0 or MAP_OFFSET[1] != 0.0
+
+
+def _off_latlon(pt: list[float] | None) -> list[float] | None:
+    """Décale un point [lat,lon] de MAP_OFFSET (recalage carte)."""
+    if not pt or pt[0] is None or not _has_offset():
+        return pt
+    return [pt[0] + MAP_OFFSET[0], pt[1] + MAP_OFFSET[1]]
+
+
+def _off_geojson_coords(coords: Any) -> Any:
+    """Décale récursivement des coordonnées GeoJSON ([lon,lat]) de MAP_OFFSET."""
+    if (isinstance(coords, (list, tuple)) and len(coords) >= 2
+            and isinstance(coords[0], (int, float)) and isinstance(coords[1], (int, float))):
+        return [coords[0] + MAP_OFFSET[1], coords[1] + MAP_OFFSET[0], *coords[2:]]
+    return [_off_geojson_coords(c) for c in coords]
+
+
+def _off_geojson(geo: dict[str, Any]) -> dict[str, Any]:
+    """Copie du FeatureCollection avec toutes les géométries décalées de MAP_OFFSET."""
+    if not _has_offset() or not isinstance(geo, dict):
+        return geo
+    feats = []
+    for f in geo.get("features", []):
+        nf = dict(f)
+        g = f.get("geometry")
+        if isinstance(g, dict) and "coordinates" in g:
+            nf["geometry"] = {**g, "coordinates": _off_geojson_coords(g["coordinates"])}
+        feats.append(nf)
+    return {**geo, "features": feats}
 
 
 class Bridge:
@@ -299,10 +344,11 @@ class Bridge:
         else:
             mower, mower_src = None, None
         return web.json_response({
-            "mower": mower,
+            "mower": _off_latlon(mower),
             "mower_src": mower_src,
-            "base": base,
+            "base": _off_latlon(base),
             "anchor_env": list(GARDEN_ANCHOR) if GARDEN_ANCHOR else None,
+            "offset": list(MAP_OFFSET) if _has_offset() else None,
             "raw": raw,
         })
 
@@ -329,7 +375,9 @@ class Bridge:
             with contextlib.suppress(Exception):
                 mp.generate_geojson(rtk, dock)
                 geo = mp.generated_geojson
-        return web.json_response(geo if isinstance(geo, dict) and geo.get("features") else empty)
+        if isinstance(geo, dict) and geo.get("features"):
+            return web.json_response(_off_geojson(geo))
+        return web.json_response(empty)
 
     async def start_http(self) -> None:
         app = web.Application()
