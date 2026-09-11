@@ -12,11 +12,16 @@ n'autorise qu'une session à la fois — voir le README principal).
 
 ## Installation
 
-1. Copier le fichier dans le dossier des templates personnalisés de Jeedom :
+1. Copier le fichier dans les templates personnalisés de Jeedom, **pour chaque
+   version que tu utilises** (`dashboard` = bureau, `mobile` = app Jeedom
+   officielle) :
    ```
    data/customTemplates/dashboard/cmd.info.string.mammotionCamera.html
+   data/customTemplates/mobile/cmd.info.string.mammotionCamera.html
    ```
    (propriétaire `www-data`, soit `chown 33:33` depuis l'hôte Docker).
+   Note : **JeedomConnect** n'utilise pas ces templates (système de widgets
+   propre) — voir plus bas.
 2. Sur l'équipement de la tondeuse, créer une commande **info / string**
    (ex. « Caméra FPV »), la rendre visible.
 3. Dans l'onglet *Affichage* de cette commande, choisir le widget
@@ -49,3 +54,13 @@ ni *mixed-content*, ni souci de CSP `frame-src`.
 - Le flux n'est demandé qu'au clic ; tant que la tuile n'est pas ouverte, aucune
   session caméra n'est consommée.
 - Le bouton **Plein écran** ouvre le lecteur autonome dans un nouvel onglet.
+
+## JeedomConnect
+
+JeedomConnect a son propre moteur de widgets et **ignore** `customTemplates/`.
+Pour y afficher la caméra, deux options :
+
+- ouvrir directement `https://<domaine-jeedom>/mammocam/` dans le navigateur du
+  téléphone (le lecteur autonome, déjà fonctionnel) ;
+- configurer dans JeedomConnect un widget capable d'afficher une page web
+  (webview / iframe / lien) pointant vers cette même URL.
