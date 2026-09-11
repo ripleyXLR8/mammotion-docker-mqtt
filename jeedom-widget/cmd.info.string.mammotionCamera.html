@@ -1,0 +1,65 @@
+<div class="cmd cmd-widget container-fluid #history#" data-type="info" data-subtype="string" data-template="mammotionCamera" data-cmd_id="#id#" data-cmd_uid="#uid#" data-version="#version#" data-eqLogic_id="#eqLogic_id#" data-camurl="#state#" style="padding:6px; min-width:120px;">
+  <div class="title #hide_name#"><span class="cmdName">#name_display#</span></div>
+  <div id="mamcam#uid#" class="mamcam-wrap" style="position:relative; width:100%; aspect-ratio:4/3; min-height:150px; background:#111; border-radius:6px; overflow:hidden;">
+    <div class="mamcam-poster" title="Ouvrir le flux FPV" style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#dfe3e6; cursor:pointer; font:13px sans-serif; user-select:none;">
+      <div style="font-size:36px; line-height:1;">&#128247;</div>
+      <div style="margin-top:6px;">Voir la cam&eacute;ra</div>
+      <div class="mamcam-hint" style="margin-top:2px; font-size:11px; opacity:.55;">FPV tondeuse</div>
+    </div>
+  </div>
+  <div style="margin-top:5px; display:flex; gap:6px; justify-content:center;">
+    <button type="button" class="btn btn-default btn-sm mamcam-close" style="display:none;">Fermer</button>
+    <a class="btn btn-default btn-sm mamcam-pop" target="_blank" rel="noopener" href="#" title="Ouvrir en plein &eacute;cran dans un onglet">Plein &eacute;cran</a>
+  </div>
+  <script>
+  (function(){
+    var uid = '#uid#';
+    var wrap = document.getElementById('mamcam' + uid);
+    if (!wrap || wrap.dataset.mamInit) { return; }
+    wrap.dataset.mamInit = '1';
+    var root = wrap.closest('.cmd');
+    var poster = wrap.querySelector('.mamcam-poster');
+    var closeBtn = root.querySelector('.mamcam-close');
+    var popLink = root.querySelector('.mamcam-pop');
+
+    function baseUrl(){
+      var v = (root && root.getAttribute('data-camurl')) || '';
+      v = ('' + v).trim();
+      if (/^https?:\/\//i.test(v)) { return v.replace(/\/+$/, ''); }
+      return 'http://192.168.100.170:8189';
+    }
+
+    function open(){
+      if (wrap.querySelector('iframe')) { return; }
+      var f = document.createElement('iframe');
+      f.src = baseUrl() + '/?ts=' + Date.now();
+      f.setAttribute('allow', 'autoplay; fullscreen');
+      f.setAttribute('allowfullscreen', '');
+      f.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; border:0; background:#000;';
+      poster.style.display = 'none';
+      wrap.appendChild(f);
+      if (closeBtn) { closeBtn.style.display = ''; }
+    }
+
+    function close(){
+      var f = wrap.querySelector('iframe');
+      if (f) { f.src = 'about:blank'; f.remove(); }
+      poster.style.display = 'flex';
+      if (closeBtn) { closeBtn.style.display = 'none'; }
+    }
+
+    poster.addEventListener('click', open);
+    if (closeBtn) { closeBtn.addEventListener('click', close); }
+    if (popLink) { popLink.addEventListener('click', function(e){ this.href = baseUrl() + '/'; }); }
+
+    // Libère la session Agora unique quand la tuile disparaît (changement d'onglet Jeedom).
+    window.addEventListener('beforeunload', close);
+
+    jeedom.cmd.update['#id#'] = function(_options){
+      if (root && _options && typeof _options.display_value !== 'undefined' && _options.display_value !== '') {
+        root.setAttribute('data-camurl', _options.display_value);
+      }
+    };
+  })();
+  </script>
+</div>

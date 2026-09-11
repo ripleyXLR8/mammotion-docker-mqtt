@@ -31,6 +31,9 @@ l'autre en boucle. La bonne pratique :
 | `MQTT_TOPIC_PREFIX` | `mammotion` | préfixe des topics d'état/commande |
 | `POLL_INTERVAL` | `60` | intervalle de republication de l'état (s) |
 | `INCLUDE_RTK` | `false` | exposer aussi la base RTK (capteurs seuls) |
+| `HTTP_PORT` | `8099` | port du lecteur caméra FPV (page + jetons/keepalive) |
+| `AGORA_SDK_URL` | CDN jsdelivr | URL du SDK Agora Web chargé par le lecteur |
+| `MAMMOTION_HA_VERSION` | `0.6.4` | **doit être un vrai numéro de version** : le serveur en dérive l'en-tête App-Version et refuse le login sinon (renvoyé, à tort, comme « Account or password mismatch ») |
 
 ## Ce qui est exposé
 
@@ -38,8 +41,13 @@ l'autre en boucle. La bonne pratique :
   Latitude/Longitude ; **binaires** : En charge, Lame.
 - **Commandes** (boutons, tondeuses seulement) : Démarrer, Pause, Retour à la
   base, Annuler, Quitter la base, Lame ON, Lame OFF.
-- La **caméra FPV n'est pas exposée** : elle transite par Agora (WebRTC
-  propriétaire), sans forme RTSP/snapshot exploitable par Jeedom.
+- **Caméra FPV** : le flux Agora (WebRTC propriétaire) n'a pas de forme
+  RTSP/snapshot, mais le pont sert une **page lecteur** (`http://<hôte>:8189/`,
+  port `HTTP_PORT` publié) où le navigateur est le pair WebRTC via le SDK Agora
+  Web. Voir [`jeedom-widget/`](jeedom-widget/) pour l'afficher dans une tuile
+  Jeedom. Endpoints : `/` (lecteur), `/tokens` (jetons Agora), `/keepalive`
+  (`refresh_fpv`). Le cloud n'autorisant qu'une session à la fois, fermez la vue
+  pour libérer la caméra.
 
 ## Avertissement
 
