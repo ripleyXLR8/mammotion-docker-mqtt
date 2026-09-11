@@ -130,43 +130,61 @@ start();
 window.addEventListener('beforeunload',()=>{if(ka)clearInterval(ka);if(renew)clearInterval(renew);if(client)client.leave().catch(()=>{});});
 </script></body></html>"""
 
-# Page carte : Leaflet + tuiles OpenStreetMap (aucune clef d'API). Récupère la
-# position via /position et place la tondeuse (et la base). Rafraîchit seul.
+# Page carte : Leaflet + fond satellite/OSM (aucune clef d'API). Position via
+# /position, zones via /zones. Recalage à la souris (poignée) → POST /offset.
 MAP_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Carte tondeuse</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>html,body{margin:0;height:100%}#map{width:100%;height:100%;min-height:180px;background:#aad3df}
-#st{position:absolute;z-index:1000;top:6px;left:8px;font:12px sans-serif;background:rgba(0,0,0,.55);color:#fff;padding:2px 6px;border-radius:4px}</style>
+#st{position:absolute;z-index:1000;top:6px;left:8px;font:12px sans-serif;background:rgba(0,0,0,.55);color:#fff;padding:2px 6px;border-radius:4px;max-width:80%}
+#bar{position:absolute;z-index:1000;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+#bar button{font:13px sans-serif;padding:6px 11px;border:0;border-radius:6px;cursor:pointer;background:#2e7d32;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}
+#bar button.sec{background:#555}.h{display:none}</style>
 </head><body><div id="map"></div><div id="st">chargement…</div>
+<div id="bar"><button id="mv" type="button">Recaler la zone</button>
+<button id="sv" type="button" class="h">Enregistrer</button>
+<button id="cn" type="button" class="sec h">Annuler</button></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script><script>
 const base=location.pathname.replace(/\/map$/,'');
 const st=document.getElementById('st');const set=t=>{st.textContent=t;st.style.display=t?'':'none';};
-let map,mower,dock,zones,zonesFitted;
+const bMv=document.getElementById('mv'),bSv=document.getElementById('sv'),bCn=document.getElementById('cn');
+let map,mower,dock,zones,fitted,zRaw,srv=[0,0],pend=[0,0],handle,mLL,bLL;
 async function getj(u){const r=await fetch(base+u);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+function P(ll){return [ll[0]+pend[0],ll[1]+pend[1]];}
+function shift(g){if(pend[0]===0&&pend[1]===0)return g;
+  const s=c=>(Array.isArray(c)&&typeof c[0]==='number')?[c[0]+pend[1],c[1]+pend[0]].concat(c.slice(2)):c.map(s);
+  return {type:g.type,features:(g.features||[]).map(f=>(f.geometry&&f.geometry.coordinates)?{type:f.type,properties:f.properties,geometry:{type:f.geometry.type,coordinates:s(f.geometry.coordinates)}}:f)};}
+function drawZones(){if(!zRaw||!map)return;if(zones)zones.remove();
+  zones=L.geoJSON(shift(zRaw),{style:f=>(f&&f.properties)||{},
+    pointToLayer:(f,ll)=>{var p=(f&&f.properties)||{};return L.circleMarker(ll,{radius:p.radius||5,color:p.color||'#333',fillColor:p.fillColor||p.color||'#333',fillOpacity:p.fillOpacity!=null?p.fillOpacity:0.6,weight:p.weight||1});},
+    onEachFeature:(f,l)=>{var n=f&&f.properties&&f.properties.name;if(n)l.bindPopup(n);}}).addTo(map);
+  if(mower&&mower.bringToFront)mower.bringToFront();}
+function redraw(){drawZones();if(mLL&&mower)mower.setLatLng(P(mLL));if(bLL&&dock)dock.setLatLng(P(bLL));}
 function ensureMap(lat,lon){if(map)return;
   var sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:21,maxNativeZoom:19,attribution:'Esri, Maxar, Earthstar Geographics'});
   var osm=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:21,maxNativeZoom:19,attribution:'© OpenStreetMap'});
   map=L.map('map',{layers:[sat]}).setView([lat,lon],19);
-  L.control.layers({'Satellite':sat,'Plan (OSM)':osm},null,{collapsed:true}).addTo(map);
-  if(new URLSearchParams(location.search).get('cal')){map.on('click',function(e){
-    var ref=dock?dock.getLatLng():(mower?mower.getLatLng():null);if(!ref)return;
-    st.style.display='';st.textContent='MAP_OFFSET='+(e.latlng.lat-ref.lat).toFixed(7)+','+(e.latlng.lng-ref.lng).toFixed(7);});}
-  loadZones();}
+  L.control.layers({'Satellite':sat,'Plan (OSM)':osm},null,{collapsed:true}).addTo(map);}
 async function loadZones(){let z;try{z=await getj('/zones');}catch(e){return;}
-  if(!z||!z.features||!z.features.length)return;
-  if(zones){zones.remove();}
-  zones=L.geoJSON(z,{style:function(f){return (f&&f.properties)||{};},
-    pointToLayer:function(f,ll){var p=(f&&f.properties)||{};return L.circleMarker(ll,{radius:p.radius||5,color:p.color||'#333',fillColor:p.fillColor||p.color||'#333',fillOpacity:p.fillOpacity!=null?p.fillOpacity:0.6,weight:p.weight||1});},
-    onEachFeature:function(f,l){var n=f&&f.properties&&f.properties.name;if(n){l.bindPopup(n);}}}).addTo(map);
-  if(mower&&mower.bringToFront){mower.bringToFront();}
-  if(!zonesFitted){try{map.fitBounds(zones.getBounds(),{padding:[12,12],maxZoom:19});zonesFitted=true;}catch(e){}}}
-async function refresh(){let p;try{p=await getj('/position');}catch(e){set('position indisponible');return;}
+  if(!z||!z.features||!z.features.length)return;zRaw=z;drawZones();
+  if(!fitted&&zones){try{map.fitBounds(zones.getBounds(),{padding:[12,12],maxZoom:19});fitted=true;}catch(e){}}}
+async function refresh(){if(handle)return;let p;try{p=await getj('/position');}catch(e){set('position indisponible');return;}
   if(!p||!p.mower||p.mower[0]==null){set('pas de position');return;}
-  const lat=p.mower[0],lon=p.mower[1];ensureMap(lat,lon);
-  if(!mower){mower=L.marker([lat,lon]).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng([lat,lon]);}
-  if(p.base&&p.base[0]!=null){if(!dock){dock=L.circleMarker(p.base,{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base RTK');}else{dock.setLatLng(p.base);}}
-  set(p.mower_src==='device_gps'?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (montrée à la base)':'position approximative'));}
-refresh();setInterval(refresh,15000);setInterval(loadZones,120000);
+  srv=p.offset||[0,0];mLL=p.mower;bLL=p.base;ensureMap(p.mower[0],p.mower[1]);if(!zRaw)loadZones();
+  if(!mower){mower=L.marker(P(mLL)).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng(P(mLL));}
+  if(bLL&&bLL[0]!=null){if(!dock){dock=L.circleMarker(P(bLL),{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base RTK');}else{dock.setLatLng(P(bLL));}}
+  set(p.mower_src==='device_gps'?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (à la base)':'position approx.'));}
+function endMove(){if(handle){handle.remove();handle=null;}if(map)map.dragging.enable();bMv.classList.remove('h');bSv.classList.add('h');bCn.classList.add('h');}
+bMv.addEventListener('click',()=>{if(!map||!bLL){set('carte pas prête');return;}
+  pend=[0,0];map.dragging.disable();bMv.classList.add('h');bSv.classList.remove('h');bCn.classList.remove('h');
+  set('glisse la poignée sur ta vraie base, puis Enregistrer');
+  handle=L.marker(P(bLL),{draggable:true,autoPan:true}).addTo(map);
+  handle.on('drag',()=>{var ll=handle.getLatLng();pend=[ll.lat-bLL[0],ll.lng-bLL[1]];redraw();});});
+bCn.addEventListener('click',()=>{pend=[0,0];endMove();redraw();set('');refresh();});
+bSv.addEventListener('click',async()=>{var tot=[srv[0]+pend[0],srv[1]+pend[1]];
+  try{await fetch(base+'/offset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({dlat:tot[0],dlon:tot[1]})});}catch(e){set('échec enregistrement');return;}
+  pend=[0,0];endMove();zRaw=null;await refresh();await loadZones();set('recalage enregistré');setTimeout(()=>set(''),2500);});
+refresh();setInterval(refresh,15000);setInterval(()=>{if(!handle)loadZones();},120000);
 </script></body></html>"""
 
 # Réglages-curseurs : clé → (méthode, nom d'argument, type, min, max, pas, unité, libellé).
@@ -187,35 +205,35 @@ def is_mower(name: str) -> bool:
     return name.lower().startswith(("luba", "yuka", "mammotion"))
 
 
-def _has_offset() -> bool:
-    return MAP_OFFSET[0] != 0.0 or MAP_OFFSET[1] != 0.0
+def _has_offset(off: tuple[float, float] | list[float]) -> bool:
+    return bool(off) and (off[0] != 0.0 or off[1] != 0.0)
 
 
-def _off_latlon(pt: list[float] | None) -> list[float] | None:
-    """Décale un point [lat,lon] de MAP_OFFSET (recalage carte)."""
-    if not pt or pt[0] is None or not _has_offset():
+def _off_latlon(pt: list[float] | None, off: tuple[float, float] | list[float]) -> list[float] | None:
+    """Décale un point [lat,lon] de `off` (recalage carte)."""
+    if not pt or pt[0] is None or not _has_offset(off):
         return pt
-    return [pt[0] + MAP_OFFSET[0], pt[1] + MAP_OFFSET[1]]
+    return [pt[0] + off[0], pt[1] + off[1]]
 
 
-def _off_geojson_coords(coords: Any) -> Any:
-    """Décale récursivement des coordonnées GeoJSON ([lon,lat]) de MAP_OFFSET."""
+def _off_geojson_coords(coords: Any, off: tuple[float, float] | list[float]) -> Any:
+    """Décale récursivement des coordonnées GeoJSON ([lon,lat]) de `off` ([dlat,dlon])."""
     if (isinstance(coords, (list, tuple)) and len(coords) >= 2
             and isinstance(coords[0], (int, float)) and isinstance(coords[1], (int, float))):
-        return [coords[0] + MAP_OFFSET[1], coords[1] + MAP_OFFSET[0], *coords[2:]]
-    return [_off_geojson_coords(c) for c in coords]
+        return [coords[0] + off[1], coords[1] + off[0], *coords[2:]]
+    return [_off_geojson_coords(c, off) for c in coords]
 
 
-def _off_geojson(geo: dict[str, Any]) -> dict[str, Any]:
-    """Copie du FeatureCollection avec toutes les géométries décalées de MAP_OFFSET."""
-    if not _has_offset() or not isinstance(geo, dict):
+def _off_geojson(geo: dict[str, Any], off: tuple[float, float] | list[float]) -> dict[str, Any]:
+    """Copie du FeatureCollection avec toutes les géométries décalées de `off`."""
+    if not _has_offset(off) or not isinstance(geo, dict):
         return geo
     feats = []
     for f in geo.get("features", []):
         nf = dict(f)
         g = f.get("geometry")
         if isinstance(g, dict) and "coordinates" in g:
-            nf["geometry"] = {**g, "coordinates": _off_geojson_coords(g["coordinates"])}
+            nf["geometry"] = {**g, "coordinates": _off_geojson_coords(g["coordinates"], off)}
         feats.append(nf)
     return {**geo, "features": feats}
 
@@ -226,6 +244,9 @@ class Bridge:
         self.mqtt: aiomqtt.Client | None = None
         self.devices: list[str] = []
         self.iot_ids: dict[str, str] = {}
+        # Recalage carte : initial = env MAP_OFFSET, surchargé par le message MQTT
+        # retenu `mammotion/config/map_offset` (persistant), modifiable via POST /offset.
+        self.map_offset: list[float] = [MAP_OFFSET[0], MAP_OFFSET[1]]
         self._stop = asyncio.Event()
 
     # ---- pymammotion -------------------------------------------------------
@@ -344,11 +365,11 @@ class Bridge:
         else:
             mower, mower_src = None, None
         return web.json_response({
-            "mower": _off_latlon(mower),
+            "mower": _off_latlon(mower, self.map_offset),
             "mower_src": mower_src,
-            "base": _off_latlon(base),
+            "base": _off_latlon(base, self.map_offset),
             "anchor_env": list(GARDEN_ANCHOR) if GARDEN_ANCHOR else None,
-            "offset": list(MAP_OFFSET) if _has_offset() else None,
+            "offset": list(self.map_offset),
             "raw": raw,
         })
 
@@ -376,8 +397,30 @@ class Bridge:
                 mp.generate_geojson(rtk, dock)
                 geo = mp.generated_geojson
         if isinstance(geo, dict) and geo.get("features"):
-            return web.json_response(_off_geojson(geo))
+            return web.json_response(_off_geojson(geo, self.map_offset))
         return web.json_response(empty)
+
+    async def http_set_offset(self, request: web.Request) -> web.Response:
+        """Enregistre le recalage carte (dlat,dlon). Persisté en MQTT retenu."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        try:
+            dlat = float(body.get("dlat", request.query.get("dlat", 0)))
+            dlon = float(body.get("dlon", request.query.get("dlon", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "dlat/dlon invalides"}, status=400)
+        # Garde-fou : un recalage de plus de ~1 km est sûrement une erreur.
+        if abs(dlat) > 0.01 or abs(dlon) > 0.01:
+            return web.json_response({"error": "décalage trop grand"}, status=400)
+        self.map_offset = [dlat, dlon]
+        LOGGER.info("Recalage carte enregistré : %s", self.map_offset)
+        if self.mqtt is not None:
+            with contextlib.suppress(Exception):
+                await self.mqtt.publish(f"{TOPIC_PREFIX}/config/map_offset",
+                                        f"{dlat},{dlon}", retain=True)
+        return web.json_response({"ok": True, "offset": self.map_offset})
 
     async def start_http(self) -> None:
         app = web.Application()
@@ -396,6 +439,7 @@ class Bridge:
                 web.get(f"{p}/map", self.http_map),
                 web.get(f"{p}/position", self.http_position),
                 web.get(f"{p}/zones", self.http_zones),
+                web.post(f"{p}/offset", self.http_set_offset),
             ]
         app.add_routes(routes)
         runner = web.AppRunner(app)
@@ -550,6 +594,13 @@ class Bridge:
 
     # ---- commandes MQTT → tondeuse ----------------------------------------
     async def handle_command(self, topic: str, payload: str) -> None:
+        # Config : recalage carte persistant (message retenu).
+        if topic == f"{TOPIC_PREFIX}/config/map_offset":
+            off = _parse_latlon(payload)
+            if off is not None:
+                self.map_offset = [off[0], off[1]]
+                LOGGER.info("Recalage carte chargé depuis MQTT : %s", self.map_offset)
+            return
         # topic = mammotion/<dev>/cmd|num/<clé>/set
         parts = topic.split("/")
         if len(parts) < 5 or parts[-1] != "set" or parts[-3] not in ("cmd", "num"):
@@ -602,6 +653,7 @@ class Bridge:
                     await self.publish_state()
                     await mqtt.subscribe(f"{TOPIC_PREFIX}/+/cmd/+/set")
                     await mqtt.subscribe(f"{TOPIC_PREFIX}/+/num/+/set")
+                    await mqtt.subscribe(f"{TOPIC_PREFIX}/config/map_offset")
                     state_task = asyncio.create_task(self.state_loop())
                     try:
                         async for message in mqtt.messages:
