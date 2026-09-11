@@ -44,24 +44,28 @@ INCLUDE_RTK = os.environ.get("INCLUDE_RTK", "false").lower() in ("1", "true", "y
 HA_VERSION = os.environ.get("MAMMOTION_HA_VERSION", "0.6.4")
 CHARGING_STATES = (1, 2)
 
-# Commandes exposées : libellé Jeedom → (méthode MammotionCommand, kwargs).
-COMMANDS: dict[str, tuple[str, dict[str, Any]]] = {
-    "start": ("start_job", {}),
-    "pause": ("pause_execute_task", {}),
-    "dock": ("return_to_dock", {}),
-    "cancel": ("cancel_job", {}),
-    "leave_dock": ("leave_dock", {}),
-    "blade_on": ("set_blade_control", {"on_off": 1}),
-    "blade_off": ("set_blade_control", {"on_off": 0}),
+# Commandes-boutons : clé → (méthode MammotionCommand, kwargs, libellé).
+COMMANDS: dict[str, tuple[str, dict[str, Any], str]] = {
+    "start": ("start_job", {}, "Démarrer la tonte"),
+    "pause": ("pause_execute_task", {}, "Pause"),
+    "resume": ("resume_execute_task", {}, "Reprendre"),
+    "continue": ("break_point_continue", {}, "Reprendre après charge"),
+    "dock": ("return_to_dock", {}, "Retour à la base"),
+    "cancel_dock": ("cancel_return_to_dock", {}, "Annuler le retour"),
+    "cancel": ("cancel_job", {}, "Annuler la tonte"),
+    "leave_dock": ("leave_dock", {}, "Quitter la base"),
+    "blade_on": ("set_blade_control", {"on_off": 1}, "Lame ON"),
+    "blade_off": ("set_blade_control", {"on_off": 0}, "Lame OFF"),
+    "restart": ("remote_restart", {"force_reset": 1}, "Redémarrer la tondeuse"),
+    "reset_blade_time": ("reset_blade_time", {}, "Réinitialiser l'usure des lames"),
 }
-COMMAND_LABELS = {
-    "start": "Démarrer la tonte",
-    "pause": "Pause",
-    "dock": "Retour à la base",
-    "cancel": "Annuler",
-    "leave_dock": "Quitter la base",
-    "blade_on": "Lame ON",
-    "blade_off": "Lame OFF",
+
+# Réglages-curseurs : clé → (méthode, nom d'argument, type, min, max, pas, unité, libellé).
+# Plages prudentes pour un LUBA 2 AWD — à affiner si besoin.
+NUMBERS: dict[str, tuple[str, str, type, float, float, float, str, str]] = {
+    "blade_height": ("set_blade_height", "height", int, 30, 70, 5, "mm", "Hauteur de coupe"),
+    "speed": ("set_speed", "speed", float, 0.2, 0.6, 0.1, "m/s", "Vitesse"),
+    "volume": ("set_car_volume", "volume", int, 0, 100, 10, "%", "Volume"),
 }
 
 
@@ -185,31 +189,46 @@ class Bridge:
                     json.dumps(cfg, ensure_ascii=False), retain=True)
             if not is_mower(name):
                 continue  # pas de commandes sur une base RTK
-            for cmd, label in COMMAND_LABELS.items():
+            for cmd, (_key, _kwargs, label) in COMMANDS.items():
                 cfg = {"name": label, "unique_id": f"{slug}_{cmd}",
                        "command_topic": f"{base}/cmd/{cmd}/set", "payload_press": "PRESS",
                        "device": device_block, **avail}
                 await self.mqtt.publish(
                     f"{DISCOVERY_PREFIX}/button/{slug}/{cmd}/config",
                     json.dumps(cfg, ensure_ascii=False), retain=True)
+            for key, (_m, _a, _c, mn, mx, step, unit, label) in NUMBERS.items():
+                cfg = {"name": label, "unique_id": f"{slug}_{key}",
+                       "command_topic": f"{base}/num/{key}/set",
+                       "min": mn, "max": mx, "step": step, "unit_of_measurement": unit,
+                       "mode": "slider", "device": device_block, **avail}
+                await self.mqtt.publish(
+                    f"{DISCOVERY_PREFIX}/number/{slug}/{key}/config",
+                    json.dumps(cfg, ensure_ascii=False), retain=True)
 
     # ---- commandes MQTT → tondeuse ----------------------------------------
-    async def handle_command(self, topic: str) -> None:
-        # topic = mammotion/<dev>/cmd/<name>/set
+    async def handle_command(self, topic: str, payload: str) -> None:
+        # topic = mammotion/<dev>/cmd|num/<clé>/set
         parts = topic.split("/")
-        if len(parts) < 5 or parts[-3] != "cmd" or parts[-1] != "set":
+        if len(parts) < 5 or parts[-1] != "set" or parts[-3] not in ("cmd", "num"):
             return
+        kind, key = parts[-3], parts[-2]
         name = "/".join(parts[1:-3])
-        cmd = parts[-2]
-        if name not in self.devices or cmd not in COMMANDS:
-            LOGGER.warning("Commande inconnue: %s / %s", name, cmd)
+        if name not in self.devices:
             return
-        key, kwargs = COMMANDS[cmd]
-        LOGGER.info("Commande %s → %s(%s) sur %s", cmd, key, kwargs, name)
         try:
-            await self.client.send_command_with_args(name, key, **kwargs)
+            if kind == "cmd" and key in COMMANDS:
+                method, kwargs, _ = COMMANDS[key]
+                LOGGER.info("Bouton %s → %s(%s) sur %s", key, method, kwargs, name)
+                await self.client.send_command_with_args(name, method, **kwargs)
+            elif kind == "num" and key in NUMBERS:
+                method, arg, cast, mn, mx, *_ = NUMBERS[key]
+                value = cast(max(mn, min(mx, float(payload))))
+                LOGGER.info("Réglage %s → %s(%s=%s) sur %s", key, method, arg, value, name)
+                await self.client.send_command_with_args(name, method, **{arg: value})
+            else:
+                LOGGER.warning("Commande inconnue: %s %s / %s", kind, key, name)
         except Exception as exc:  # noqa: BLE001
-            LOGGER.error("Échec de la commande %s sur %s : %r", cmd, name, exc)
+            LOGGER.error("Échec de %s %s sur %s : %r", kind, key, name, exc)
 
     # ---- boucle principale -------------------------------------------------
     async def state_loop(self) -> None:
@@ -235,10 +254,12 @@ class Bridge:
                     await self.publish_discovery()
                     await self.publish_state()
                     await mqtt.subscribe(f"{TOPIC_PREFIX}/+/cmd/+/set")
+                    await mqtt.subscribe(f"{TOPIC_PREFIX}/+/num/+/set")
                     state_task = asyncio.create_task(self.state_loop())
                     try:
                         async for message in mqtt.messages:
-                            await self.handle_command(str(message.topic))
+                            payload = message.payload.decode() if isinstance(message.payload, bytes) else str(message.payload)
+                            await self.handle_command(str(message.topic), payload)
                     finally:
                         state_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
