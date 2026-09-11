@@ -91,4 +91,4 @@ absolue, renseigne `GARDEN_ANCHOR=lat,lon` (voir README principal).
 « Enregistrer » envoie `POST /offset`, mémorisé côté serveur en **MQTT retenu**
 (`mammotion/config/map_offset`) — donc persistant et appliqué partout (tuile, tous
 appareils). Sans fix RTK (tondeuse en veille), la dernière position/base valides
-sont mises en cache pour ne pas vider la carte.
+sont mises en cache pour ne pas vider la carte ; la **base RTK** (qui ne bouge pas) est en plus **persistée** en MQTT retenu (`mammotion/config/rtk_base`), si bien que le repère base et les zones sont disponibles dès le démarrage du pont, sans attendre un fix.
