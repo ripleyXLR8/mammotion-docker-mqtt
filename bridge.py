@@ -38,6 +38,10 @@ DISCOVERY_PREFIX = os.environ.get("MQTT_DISCOVERY_PREFIX", "homeassistant")
 TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "mammotion")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 INCLUDE_RTK = os.environ.get("INCLUDE_RTK", "false").lower() in ("1", "true", "yes")
+# Doit être un numéro de version type Mammotion-HA : le serveur dérive l'en-tête
+# App-Version (« HA,2.<x> ») et REFUSE le login sinon (renvoyé comme « Account or
+# password mismatch » — piège vérifié le 2026-09-11, cf. PyMammotion #137).
+HA_VERSION = os.environ.get("MAMMOTION_HA_VERSION", "0.6.4")
 CHARGING_STATES = (1, 2)
 
 # Commandes exposées : libellé Jeedom → (méthode MammotionCommand, kwargs).
@@ -72,7 +76,7 @@ def is_mower(name: str) -> bool:
 
 class Bridge:
     def __init__(self) -> None:
-        self.client = MammotionClient(ha_version="mammotion2mqtt")
+        self.client = MammotionClient(ha_version=HA_VERSION)
         self.mqtt: aiomqtt.Client | None = None
         self.devices: list[str] = []
         self._stop = asyncio.Event()
