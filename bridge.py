@@ -25,6 +25,7 @@ from typing import Any
 import aiomqtt
 from aiohttp import web
 from pymammotion.client import MammotionClient
+from pymammotion.data.model.location import Dock, LocationPoint
 from pymammotion.utility.constant.device_constant import device_connection, device_mode
 
 LOGGER = logging.getLogger("mammotion2mqtt")
@@ -260,6 +261,7 @@ class Bridge:
         self.last_rtk: Any = None    # LocationPoint (radians), base fixe
         self.last_dock: Any = None
         self.last_mower: list[float] | None = None  # [lat,lon] degrés
+        self._rtk_published: str | None = None  # dernier payload base RTK publié
         self._stop = asyncio.Event()
 
     # ---- pymammotion -------------------------------------------------------
@@ -362,6 +364,30 @@ class Bridge:
         eff_dock = self.last_dock if self.last_dock is not None else dock
         return dev, eff_rtk, eff_dock
 
+    async def _publish_rtk_base(self) -> None:
+        """Mémorise la base RTK (elle ne bouge pas) en **MQTT retenu**. Au
+        redémarrage le pont retrouve aussitôt la référence géographique : repère
+        base et zones disponibles sans attendre un fix, qui peut manquer longtemps."""
+        rtk = self.last_rtk
+        if self.mqtt is None or rtk is None or not getattr(rtk, "latitude", 0):
+            return
+        dock = self.last_dock
+        payload = json.dumps({
+            "lat": float(rtk.latitude),
+            "lon": float(rtk.longitude),
+            "yaw": float(getattr(rtk, "yaw", 0) or 0),
+            "dock": None if dock is None else {
+                "lat": float(getattr(dock, "latitude", 0) or 0),
+                "lon": float(getattr(dock, "longitude", 0) or 0),
+                "rot": int(getattr(dock, "rotation", 0) or 0)},
+        })
+        if payload == self._rtk_published:
+            return
+        with contextlib.suppress(Exception):
+            await self.mqtt.publish(f"{TOPIC_PREFIX}/config/rtk_base", payload, retain=True)
+            self._rtk_published = payload
+            LOGGER.info("Base RTK mémorisée (MQTT retenu)")
+
     def _rtk_base_abs(self, rtk: Any) -> list[float] | None:
         """Position absolue de la base RTK (LocationPoint). ``location.RTK`` est en
         RADIANS (0.855 rad ≈ 49°) → degrés. Sert de repère « base »."""
@@ -434,7 +460,7 @@ class Bridge:
         needs = not geo or not (isinstance(geo, dict) and geo.get("features"))
         if needs and rtk is not None and getattr(rtk, "latitude", 0):
             with contextlib.suppress(Exception):
-                mp.generate_geojson(rtk, dock)
+                mp.generate_geojson(rtk, dock if dock is not None else Dock())
                 geo = mp.generated_geojson
         if isinstance(geo, dict) and geo.get("features"):
             return web.json_response(_off_geojson(geo, self.map_offset))
@@ -560,6 +586,7 @@ class Bridge:
             for key, value in self._number_values(name).items():
                 if value is not None:
                     await self.mqtt.publish(f"{base}/num/{key}/state", value, retain=True)
+        await self._publish_rtk_base()
 
     # ---- découverte MQTT ---------------------------------------------------
     async def publish_discovery(self) -> None:
@@ -634,6 +661,22 @@ class Bridge:
 
     # ---- commandes MQTT → tondeuse ----------------------------------------
     async def handle_command(self, topic: str, payload: str) -> None:
+        # Config : base RTK mémorisée (message retenu) — rechargée au démarrage.
+        if topic == f"{TOPIC_PREFIX}/config/rtk_base":
+            with contextlib.suppress(Exception):
+                data = json.loads(payload)
+                if self.last_rtk is None and data.get("lat"):
+                    self.last_rtk = LocationPoint(latitude=float(data["lat"]),
+                                                  longitude=float(data["lon"]),
+                                                  yaw=float(data.get("yaw") or 0))
+                    d = data.get("dock")
+                    if d:
+                        self.last_dock = Dock(latitude=float(d.get("lat") or 0),
+                                              longitude=float(d.get("lon") or 0),
+                                              yaw=0.0, rotation=int(d.get("rot") or 0))
+                    LOGGER.info("Base RTK rechargée depuis MQTT (référence disponible sans fix)")
+                self._rtk_published = payload
+            return
         # Config : recalage carte persistant (message retenu).
         if topic == f"{TOPIC_PREFIX}/config/map_offset":
             off = _parse_latlon(payload)
@@ -694,6 +737,7 @@ class Bridge:
                     await mqtt.subscribe(f"{TOPIC_PREFIX}/+/cmd/+/set")
                     await mqtt.subscribe(f"{TOPIC_PREFIX}/+/num/+/set")
                     await mqtt.subscribe(f"{TOPIC_PREFIX}/config/map_offset")
+                    await mqtt.subscribe(f"{TOPIC_PREFIX}/config/rtk_base")
                     state_task = asyncio.create_task(self.state_loop())
                     try:
                         async for message in mqtt.messages:
