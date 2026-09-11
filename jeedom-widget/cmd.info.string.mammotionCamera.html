@@ -35,7 +35,8 @@
       f.src = baseUrl() + '/?ts=' + Date.now();
       f.setAttribute('allow', 'autoplay; fullscreen');
       f.setAttribute('allowfullscreen', '');
-      f.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; border:0; background:#000;';
+      f.setAttribute('scrolling', 'no');
+      f.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; border:0; background:#000; overflow:hidden;';
       poster.style.display = 'none';
       wrap.appendChild(f);
       if (closeBtn) { closeBtn.style.display = ''; }
