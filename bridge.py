@@ -139,7 +139,9 @@ MAP_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 #st{position:absolute;z-index:1000;top:6px;left:8px;font:12px sans-serif;background:rgba(0,0,0,.55);color:#fff;padding:2px 6px;border-radius:4px;max-width:80%}
 #bar{position:absolute;z-index:1000;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
 #bar button{font:13px sans-serif;padding:6px 11px;border:0;border-radius:6px;cursor:pointer;background:#2e7d32;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}
-#bar button.sec{background:#555}.h{display:none}</style>
+#bar button.sec{background:#555}.h{display:none}
+.mower-ic{background:none;border:0;line-height:0}
+.mower-ic svg{filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}</style>
 </head><body><div id="map"></div><div id="st">chargement…</div>
 <div id="bar"><button id="mv" type="button">Recaler la zone</button>
 <button id="sv" type="button" class="h">Enregistrer</button>
@@ -149,6 +151,8 @@ const base=location.pathname.replace(/\/map$/,'');
 const st=document.getElementById('st');const set=t=>{st.textContent=t;st.style.display=t?'':'none';};
 const bMv=document.getElementById('mv'),bSv=document.getElementById('sv'),bCn=document.getElementById('cn');
 let map,mower,dock,zones,fitted,zRaw,srv=[0,0],pend=[0,0],handle,mLL,bLL;
+const mowerIcon=L.divIcon({className:'mower-ic',iconSize:[42,42],iconAnchor:[21,21],popupAnchor:[0,-15],
+  html:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="42" height="42"><ellipse cx="24" cy="43" rx="13" ry="2.6" fill="rgba(0,0,0,.25)"/><rect x="6" y="12" width="5" height="9" rx="2" fill="#0e0e0e"/><rect x="37" y="12" width="5" height="9" rx="2" fill="#0e0e0e"/><rect x="6" y="27" width="5" height="9" rx="2" fill="#0e0e0e"/><rect x="37" y="27" width="5" height="9" rx="2" fill="#0e0e0e"/><rect x="9" y="7" width="30" height="34" rx="11" fill="#23272b" stroke="#0d0d0d" stroke-width="1.5"/><path d="M13 20 q0-8 11-8 q11 0 11 8 v9 q0 6-11 6 q-11 0-11-6 z" fill="#8bc34a"/><rect x="15" y="21" width="18" height="6" rx="3" fill="#1c1f22" opacity=".9"/><circle cx="24" cy="14" r="2.6" fill="#c8e6a0" stroke="#5a7d2a" stroke-width="1"/></svg>`});
 async function getj(u){const r=await fetch(base+u);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 function P(ll){return [ll[0]+pend[0],ll[1]+pend[1]];}
 function shift(g){if(pend[0]===0&&pend[1]===0)return g;
@@ -171,7 +175,7 @@ async function loadZones(){let z;try{z=await getj('/zones');}catch(e){return;}
 async function refresh(){if(handle)return;let p;try{p=await getj('/position');}catch(e){set('position indisponible');return;}
   if(!p||!p.mower||p.mower[0]==null){set('pas de position');return;}
   srv=p.offset||[0,0];mLL=p.mower;bLL=p.base;ensureMap(p.mower[0],p.mower[1]);if(!zRaw)loadZones();
-  if(!mower){mower=L.marker(P(mLL)).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng(P(mLL));}
+  if(!mower){mower=L.marker(P(mLL),{icon:mowerIcon}).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng(P(mLL));}
   if(bLL&&bLL[0]!=null){if(!dock){dock=L.circleMarker(P(bLL),{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base RTK');}else{dock.setLatLng(P(bLL));}}
   set((p.mower_src==='device_gps'||p.mower_src==='device_cached')?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (à la base)':'position approx.'));}
 function endMove(){if(handle){handle.remove();handle=null;}if(map)map.dragging.enable();bMv.classList.remove('h');bSv.classList.add('h');bCn.classList.add('h');}
