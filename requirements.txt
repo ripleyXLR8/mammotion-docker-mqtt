@@ -1,3 +1,4 @@
 pymammotion==0.8.14
 aiomqtt>=2.5.1
+aiohttp>=3.9.1
 packaging

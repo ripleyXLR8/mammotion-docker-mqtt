@@ -22,6 +22,7 @@ import signal
 from typing import Any
 
 import aiomqtt
+from aiohttp import web
 from pymammotion.client import MammotionClient
 from pymammotion.utility.constant.device_constant import device_connection, device_mode
 
@@ -38,6 +39,8 @@ DISCOVERY_PREFIX = os.environ.get("MQTT_DISCOVERY_PREFIX", "homeassistant")
 TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "mammotion")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 INCLUDE_RTK = os.environ.get("INCLUDE_RTK", "false").lower() in ("1", "true", "yes")
+HTTP_PORT = int(os.environ.get("HTTP_PORT", "8099"))  # serveur du lecteur caméra FPV
+AGORA_SDK_URL = os.environ.get("AGORA_SDK_URL", "https://cdn.jsdelivr.net/npm/agora-rtc-sdk-ng/AgoraRTC_N-production.js")
 # Doit être un numéro de version type Mammotion-HA : le serveur dérive l'en-tête
 # App-Version (« HA,2.<x> ») et REFUSE le login sinon (renvoyé comme « Account or
 # password mismatch » — piège vérifié le 2026-09-11, cf. PyMammotion #137).
@@ -72,6 +75,35 @@ COMMANDS: dict[str, tuple[str, dict[str, Any], str]] = {
 # Niveau de position RTK (report_data.rtk.pos_level).
 RTK_LEVELS = {0: "Aucune position", 1: "RTK fixe", 2: "RTK + vision", 3: "Vision seule"}
 
+# Page lecteur du flux FPV : le navigateur est le pair WebRTC (SDK Agora Web),
+# exactement comme l'app et Home Assistant. Le pont ne fournit que les jetons et
+# le keep-alive. Sert aussi de corps au widget Jeedom (même JS).
+PLAYER_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Caméra tondeuse</title>
+<style>html,body{margin:0;background:#000;height:100%}#player{width:100%;height:100%;min-height:200px}
+#status{position:absolute;top:6px;left:8px;color:#fff;font:12px sans-serif;background:rgba(0,0,0,.55);padding:2px 6px;border-radius:4px}</style>
+</head><body><div id="player"></div><div id="status">connexion…</div>
+<script src="{{AGORA_SDK_URL}}"></script><script>
+const params=new URLSearchParams(location.search);const device=params.get('device')||'';
+const base=(location.pathname.replace(/\/(player)?$/,''));
+const s=document.getElementById('status');const set=t=>s.textContent=t;
+let client,ka,renew;
+async function tokens(){const r=await fetch(base+'/tokens?device='+encodeURIComponent(device));if(!r.ok)throw new Error('tokens '+r.status);return r.json();}
+async function start(){
+  if(typeof AgoraRTC==='undefined'){set('SDK Agora non chargé');return;}
+  let t;try{t=await tokens();}catch(e){set('Erreur jetons: '+e.message);return;}
+  if(t.error){set('Flux indisponible: '+t.error);return;}
+  client=AgoraRTC.createClient({mode:'rtc',codec:'h264'});
+  client.on('user-published',async(u,m)=>{try{await client.subscribe(u,m);if(m==='video'){u.videoTrack.play('player');set('');}}catch(e){set('subscribe: '+e.message);}});
+  client.on('user-unpublished',()=>set('flux interrompu, maintien…'));
+  try{await client.join(t.appid,t.channelName,t.token,t.uid);set('en attente du flux…');}catch(e){set('join: '+(e.message||e));return;}
+  ka=setInterval(()=>fetch(base+'/keepalive?device='+encodeURIComponent(device)).catch(()=>{}),3000);
+  renew=setInterval(async()=>{try{const n=await tokens();if(n.token)await client.renewToken(n.token);}catch(e){}},1800000);
+}
+start();
+window.addEventListener('beforeunload',()=>{if(ka)clearInterval(ka);if(renew)clearInterval(renew);if(client)client.leave().catch(()=>{});});
+</script></body></html>"""
+
 # Réglages-curseurs : clé → (méthode, nom d'argument, type, min, max, pas, unité, libellé).
 # Plages prudentes pour un LUBA 2 AWD — à affiner si besoin.
 NUMBERS: dict[str, tuple[str, str, type, float, float, float, str, str]] = {
@@ -95,6 +127,7 @@ class Bridge:
         self.client = MammotionClient(ha_version=HA_VERSION)
         self.mqtt: aiomqtt.Client | None = None
         self.devices: list[str] = []
+        self.iot_ids: dict[str, str] = {}
         self._stop = asyncio.Event()
 
     # ---- pymammotion -------------------------------------------------------
@@ -103,10 +136,53 @@ class Bridge:
         await self.client.login_and_initiate_cloud(EMAIL, PASSWORD)
         all_names = [h.device_name for h in self.client.device_registry.all_devices]
         self.devices = [n for n in all_names if is_mower(n) or INCLUDE_RTK]
+        self.iot_ids = {h.device_name: getattr(h, "iot_id", "") for h in self.client.device_registry.all_devices}
         LOGGER.info("Appareils : %s (retenus : %s)", all_names, self.devices)
         for name in self.devices:
             with contextlib.suppress(Exception):
                 await self.client.request_reports(name, count=1, timeout=3000)
+
+    # ---- caméra FPV : jetons Agora + serveur du lecteur --------------------
+    def _first_mower(self) -> str | None:
+        return next((n for n in self.devices if is_mower(n)), None)
+
+    async def http_tokens(self, request: web.Request) -> web.Response:
+        name = request.query.get("device") or self._first_mower()
+        if not name or name not in self.iot_ids:
+            return web.json_response({"error": "device inconnu"}, status=404)
+        try:
+            sub = await self.client.get_stream_subscription(name, self.iot_ids[name])
+            data = getattr(sub, "data", sub)
+            payload = data.to_dict() if hasattr(data, "to_dict") else dict(data)
+            return web.json_response(payload)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("tokens caméra %s : %r", name, exc)
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def http_keepalive(self, request: web.Request) -> web.Response:
+        name = request.query.get("device") or self._first_mower()
+        if name and name in self.devices:
+            with contextlib.suppress(Exception):
+                await self.client.send_command_with_args(name, "refresh_fpv")
+        return web.json_response({"ok": True})
+
+    async def http_index(self, request: web.Request) -> web.Response:
+        html = PLAYER_HTML.replace("{{AGORA_SDK_URL}}", AGORA_SDK_URL)
+        return web.Response(text=html, content_type="text/html")
+
+    async def start_http(self) -> None:
+        app = web.Application()
+        app.add_routes([
+            web.get("/", self.http_index),
+            web.get("/player", self.http_index),
+            web.get("/tokens", self.http_tokens),
+            web.get("/keepalive", self.http_keepalive),
+        ])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
+        await site.start()
+        LOGGER.info("Lecteur caméra sur http://0.0.0.0:%s/ (page) et /tokens", HTTP_PORT)
 
     # ---- état → MQTT -------------------------------------------------------
     def _fields(self, name: str) -> dict[str, Any] | None:
@@ -288,6 +364,8 @@ class Bridge:
 
     async def run(self) -> None:
         await self.login()
+        with contextlib.suppress(Exception):
+            await self.start_http()
         while not self._stop.is_set():
             try:
                 async with aiomqtt.Client(
