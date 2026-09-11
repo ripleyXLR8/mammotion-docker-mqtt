@@ -25,11 +25,27 @@ n'autorise qu'une session à la fois — voir le README principal).
    `http://192.168.100.170:8189` — le widget la lit via `data-camurl`.
    À défaut, il utilise l'URL de repli codée en dur dans le fichier (à adapter).
 
+## Jeedom en HTTPS : éviter le blocage *mixed-content*
+
+Une page HTTPS **refuse** une `iframe` en HTTP : si tu ouvres Jeedom via une URL
+HTTPS (domaine derrière un reverse proxy), pointer la tuile vers
+`http://<hôte>:8189` échoue silencieusement. Sers alors le pont en HTTPS, le plus
+simple étant de le republier **sous un sous-chemin du domaine Jeedom** :
+
+1. Pont : variable `BASE_PATH=/mammocam` (le lecteur, `/tokens` et `/keepalive`
+   sont alors servis sous ce préfixe).
+2. Reverse proxy (ex. Nginx Proxy Manager, sur l'hôte du domaine Jeedom) :
+   ajouter une *custom location* `/mammocam` → `http://<hôte-du-pont>:8189`
+   (sans réécriture : le pont attend déjà le préfixe).
+3. Valeur de la commande caméra = `https://<domaine-jeedom>/mammocam`.
+
+La tuile charge alors une `iframe` **de même origine** que le tableau de bord :
+ni *mixed-content*, ni souci de CSP `frame-src`.
+
 ## Notes
 
-- L'iframe pointe vers un port HTTP du pont (8189 par défaut). Si Jeedom est en
-  HTTPS, servez aussi le pont en HTTPS (ou via un reverse proxy) pour éviter le
-  blocage *mixed-content*.
+- Sans HTTPS (Jeedom ouvert en `http://<ip>`), l'iframe HTTP directe vers
+  `http://<hôte>:8189` fonctionne telle quelle.
 - Le flux n'est demandé qu'au clic ; tant que la tuile n'est pas ouverte, aucune
   session caméra n'est consommée.
 - Le bouton **Plein écran** ouvre le lecteur autonome dans un nouvel onglet.
