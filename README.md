@@ -50,6 +50,11 @@ l'autre en boucle. La bonne pratique :
   Jeedom. Endpoints : `/` (lecteur), `/tokens` (jetons Agora), `/keepalive`
   (`refresh_fpv`). Le cloud n'autorisant qu'une session à la fois, fermez la vue
   pour libérer la caméra.
+- **Carte GPS** : le pont sert une **page carte** (`/map`, Leaflet + tuiles
+  OpenStreetMap, **aucune clef d'API**) et un endpoint `/position` qui donne la
+  position absolue de la tondeuse (`location.device` en degrés dès qu'il y a un
+  fix RTK) et de la base RTK (`location.RTK`, en radians → degrés). Affichable
+  dans une tuile Jeedom (voir [`jeedom-widget/`](jeedom-widget/)).
 
 ## Avertissement
 

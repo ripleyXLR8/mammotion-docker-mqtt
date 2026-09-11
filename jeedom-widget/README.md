@@ -64,3 +64,18 @@ Pour y afficher la caméra, deux options :
   téléphone (le lecteur autonome, déjà fonctionnel) ;
 - configurer dans JeedomConnect un widget capable d'afficher une page web
   (webview / iframe / lien) pointant vers cette même URL.
+
+## Widget carte GPS (`cmd.info.string.mammotionMap.html`)
+
+Affiche la position de la tondeuse sur une carte **Leaflet + OpenStreetMap**
+(aucune clef d'API). Même montage que la caméra : le pont sert la page `/map`
+(et `/position` en JSON), le widget l'affiche en iframe (auto-chargée, pas de
+contrainte de session). Installer comme la caméra (fichier dans
+`customTemplates/dashboard` et `/mobile`, commande info/string, valeur =
+`https://<domaine>/mammocam/map`, template `mammotionMap`).
+
+Position : `location.device` de la tondeuse est en **degrés absolus** dès qu'il y
+a un fix RTK (sinon ~0 → repli sur la base) ; `location.RTK` (la base) est en
+**radians**, converti en degrés et affiché comme repère « Base RTK ». `/position`
+renvoie `{mower, base, mower_src, raw}`. Si le device ne fournit pas de position
+absolue, renseigne `GARDEN_ANCHOR=lat,lon` (voir README principal).
