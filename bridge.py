@@ -136,17 +136,25 @@ MAP_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script><script>
 const base=location.pathname.replace(/\/map$/,'');
 const st=document.getElementById('st');const set=t=>{st.textContent=t;st.style.display=t?'':'none';};
-let map,mower,dock;
-async function getpos(){const r=await fetch(base+'/position');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+let map,mower,dock,zones,zonesFitted;
+async function getj(u){const r=await fetch(base+u);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 function ensureMap(lat,lon){if(map)return;map=L.map('map').setView([lat,lon],19);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);}
-async function refresh(){let p;try{p=await getpos();}catch(e){set('position indisponible');return;}
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);loadZones();}
+async function loadZones(){let z;try{z=await getj('/zones');}catch(e){return;}
+  if(!z||!z.features||!z.features.length)return;
+  if(zones){zones.remove();}
+  zones=L.geoJSON(z,{style:function(f){return (f&&f.properties)||{};},
+    pointToLayer:function(f,ll){var p=(f&&f.properties)||{};return L.circleMarker(ll,{radius:p.radius||5,color:p.color||'#333',fillColor:p.fillColor||p.color||'#333',fillOpacity:p.fillOpacity!=null?p.fillOpacity:0.6,weight:p.weight||1});},
+    onEachFeature:function(f,l){var n=f&&f.properties&&f.properties.name;if(n){l.bindPopup(n);}}}).addTo(map);
+  if(mower&&mower.bringToFront){mower.bringToFront();}
+  if(!zonesFitted){try{map.fitBounds(zones.getBounds(),{padding:[12,12],maxZoom:19});zonesFitted=true;}catch(e){}}}
+async function refresh(){let p;try{p=await getj('/position');}catch(e){set('position indisponible');return;}
   if(!p||!p.mower||p.mower[0]==null){set('pas de position');return;}
   const lat=p.mower[0],lon=p.mower[1];ensureMap(lat,lon);
   if(!mower){mower=L.marker([lat,lon]).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng([lat,lon]);}
   if(p.base&&p.base[0]!=null){if(!dock){dock=L.circleMarker(p.base,{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base RTK');}else{dock.setLatLng(p.base);}}
   set(p.mower_src==='device_gps'?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (montrée à la base)':'position approximative'));}
-refresh();setInterval(refresh,15000);
+refresh();setInterval(refresh,15000);setInterval(loadZones,120000);
 </script></body></html>"""
 
 # Réglages-curseurs : clé → (méthode, nom d'argument, type, min, max, pas, unité, libellé).
@@ -186,6 +194,20 @@ class Bridge:
         for name in self.devices:
             with contextlib.suppress(Exception):
                 await self.client.request_reports(name, count=1, timeout=3000)
+
+    async def sync_maps(self) -> None:
+        """Synchronise la carte (zones) de chaque tondeuse. PyMammotion peuple
+        alors ``device.map`` et génère ``generated_geojson`` (voir /zones).
+        Best-effort, lancé en tâche de fond (la synchro peut durer)."""
+        for name in self.devices:
+            if not is_mower(name):
+                continue
+            try:
+                LOGGER.info("Synchronisation de la carte de %s...", name)
+                await self.client.start_map_sync(name)
+                LOGGER.info("Carte de %s synchronisée", name)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Synchro carte %s échouée : %r", name, exc)
 
     # ---- caméra FPV : jetons Agora + serveur du lecteur --------------------
     def _first_mower(self) -> str | None:
@@ -284,6 +306,31 @@ class Bridge:
             "raw": raw,
         })
 
+    async def http_zones(self, request: web.Request) -> web.Response:
+        """GeoJSON des zones de tonte (aires, obstacles, chemins) en lat/lon.
+
+        Le GeoJSON est produit par PyMammotion après une synchro de carte
+        (``start_map_sync``, déclenchée au démarrage). Les ``properties`` de chaque
+        feature portent directement les options de style Leaflet.
+        """
+        empty = {"type": "FeatureCollection", "features": []}
+        name = request.query.get("device") or self._first_mower()
+        dev = self.client.get_device_by_name(name) if name else None
+        mp = getattr(dev, "map", None) if dev else None
+        if mp is None:
+            return web.json_response(empty)
+        geo = getattr(mp, "generated_geojson", None)
+        # (Re)génère depuis la référence RTK si absent mais données de carte présentes.
+        loc = getattr(dev, "location", None)
+        rtk = getattr(loc, "RTK", None) if loc else None
+        dock = getattr(loc, "dock", None) if loc else None
+        needs = not geo or not (isinstance(geo, dict) and geo.get("features"))
+        if needs and rtk is not None and getattr(rtk, "latitude", 0):
+            with contextlib.suppress(Exception):
+                mp.generate_geojson(rtk, dock)
+                geo = mp.generated_geojson
+        return web.json_response(geo if isinstance(geo, dict) and geo.get("features") else empty)
+
     async def start_http(self) -> None:
         app = web.Application()
         prefixes = [""]
@@ -300,6 +347,7 @@ class Bridge:
                 web.get(f"{p}/keepalive", self.http_keepalive),
                 web.get(f"{p}/map", self.http_map),
                 web.get(f"{p}/position", self.http_position),
+                web.get(f"{p}/zones", self.http_zones),
             ]
         app.add_routes(routes)
         runner = web.AppRunner(app)
@@ -491,6 +539,8 @@ class Bridge:
         await self.login()
         with contextlib.suppress(Exception):
             await self.start_http()
+        # Synchro de la carte en tâche de fond (peut durer ; ne bloque pas le pont).
+        asyncio.create_task(self.sync_maps())
         while not self._stop.is_set():
             try:
                 async with aiomqtt.Client(
