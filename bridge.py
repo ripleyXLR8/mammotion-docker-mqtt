@@ -173,7 +173,7 @@ async function refresh(){if(handle)return;let p;try{p=await getj('/position');}c
   srv=p.offset||[0,0];mLL=p.mower;bLL=p.base;ensureMap(p.mower[0],p.mower[1]);if(!zRaw)loadZones();
   if(!mower){mower=L.marker(P(mLL)).addTo(map).bindPopup('Tondeuse');}else{mower.setLatLng(P(mLL));}
   if(bLL&&bLL[0]!=null){if(!dock){dock=L.circleMarker(P(bLL),{radius:6,color:'#2e7d32',fillColor:'#2e7d32',fillOpacity:1}).addTo(map).bindPopup('Base RTK');}else{dock.setLatLng(P(bLL));}}
-  set(p.mower_src==='device_gps'?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (à la base)':'position approx.'));}
+  set((p.mower_src==='device_gps'||p.mower_src==='device_cached')?'':(p.mower_src==='base_no_fix'?'tondeuse sans fix (à la base)':'position approx.'));}
 function endMove(){if(handle){handle.remove();handle=null;}if(map)map.dragging.enable();bMv.classList.remove('h');bSv.classList.add('h');bCn.classList.add('h');}
 bMv.addEventListener('click',()=>{if(!map||!bLL){set('carte pas prête');return;}
   pend=[0,0];map.dragging.disable();bMv.classList.add('h');bSv.classList.remove('h');bCn.classList.remove('h');
@@ -247,6 +247,11 @@ class Bridge:
         # Recalage carte : initial = env MAP_OFFSET, surchargé par le message MQTT
         # retenu `mammotion/config/map_offset` (persistant), modifiable via POST /offset.
         self.map_offset: list[float] = [MAP_OFFSET[0], MAP_OFFSET[1]]
+        # Cache de position : le fix RTK est intermittent (s'éteint en veille). On
+        # garde les derniers points valides pour ne pas vider la carte dans les creux.
+        self.last_rtk: Any = None    # LocationPoint (radians), base fixe
+        self.last_dock: Any = None
+        self.last_mower: list[float] | None = None  # [lat,lon] degrés
         self._stop = asyncio.Event()
 
     # ---- pymammotion -------------------------------------------------------
@@ -333,12 +338,28 @@ class Bridge:
     async def http_map(self, request: web.Request) -> web.Response:
         return web.Response(text=MAP_HTML, content_type="text/html")
 
-    def _rtk_base_abs(self, rtk: dict[str, Any] | None) -> list[float] | None:
-        """Position absolue de la base RTK. ``location.RTK`` est en RADIANS
-        (0.855 rad ≈ 49°) ; on convertit en degrés. Sert de repère « base »."""
-        if not rtk or rtk.get("lat") is None:
+    def _live_or_cached(self, name: str | None) -> tuple[Any, Any, Any]:
+        """(device, rtk_point, dock_point) : RTK/dock live si valides, sinon les
+        derniers connus (la base RTK ne bouge pas ; le fix est intermittent)."""
+        dev = self.client.get_device_by_name(name) if name else None
+        loc = getattr(dev, "location", None) if dev else None
+        rtk = getattr(loc, "RTK", None) if loc else None
+        dock = getattr(loc, "dock", None) if loc else None
+        if rtk is not None and getattr(rtk, "latitude", 0):
+            self.last_rtk = rtk
+            if dock is not None:
+                self.last_dock = dock
+        eff_rtk = self.last_rtk if self.last_rtk is not None else rtk
+        eff_dock = self.last_dock if self.last_dock is not None else dock
+        return dev, eff_rtk, eff_dock
+
+    def _rtk_base_abs(self, rtk: Any) -> list[float] | None:
+        """Position absolue de la base RTK (LocationPoint). ``location.RTK`` est en
+        RADIANS (0.855 rad ≈ 49°) → degrés. Sert de repère « base »."""
+        lat = getattr(rtk, "latitude", None) if rtk is not None else None
+        lon = getattr(rtk, "longitude", None) if rtk is not None else None
+        if lat is None:
             return None
-        lat, lon = rtk["lat"], rtk["lon"]
         try:
             dlat, dlon = math.degrees(float(lat)), math.degrees(float(lon))
         except (TypeError, ValueError):
@@ -351,19 +372,25 @@ class Bridge:
 
     async def http_position(self, request: web.Request) -> web.Response:
         name = request.query.get("device") or self._first_mower()
-        raw = self._raw_location(name) if name else None
-        dev = raw.get("device") if raw else None
-        rtk = raw.get("RTK") if raw else None
+        dev, rtk, _dock = self._live_or_cached(name)
+        loc = getattr(dev, "location", None) if dev else None
+        devpt = getattr(loc, "device", None) if loc else None
+        dlat = getattr(devpt, "latitude", None) if devpt else None
+        dlon = getattr(devpt, "longitude", None) if devpt else None
         base = self._rtk_base_abs(rtk)
         anchor = base or (list(GARDEN_ANCHOR) if GARDEN_ANCHOR else None)
-        # ``device`` est en degrés absolus dès qu'il y a un fix RTK ; sans fix il est
-        # proche de 0 → on montre alors la tondeuse à la base (ou à l'ancre).
-        if dev and self._plausible_abs(dev.get("lat"), dev.get("lon")):
-            mower, mower_src = [float(dev["lat"]), float(dev["lon"])], "device_gps"
+        # ``device`` est en degrés absolus dès qu'il y a un fix RTK ; sans fix (~0)
+        # on garde le dernier point connu, sinon la base, sinon l'ancre.
+        if self._plausible_abs(dlat, dlon):
+            mower, mower_src = [float(dlat), float(dlon)], "device_gps"
+            self.last_mower = mower
+        elif self.last_mower:
+            mower, mower_src = self.last_mower, "device_cached"
         elif anchor:
             mower, mower_src = anchor, ("base_no_fix" if base else "anchor_env")
         else:
             mower, mower_src = None, None
+        raw = self._raw_location(name)
         return web.json_response({
             "mower": _off_latlon(mower, self.map_offset),
             "mower_src": mower_src,
@@ -382,15 +409,12 @@ class Bridge:
         """
         empty = {"type": "FeatureCollection", "features": []}
         name = request.query.get("device") or self._first_mower()
-        dev = self.client.get_device_by_name(name) if name else None
+        dev, rtk, dock = self._live_or_cached(name)
         mp = getattr(dev, "map", None) if dev else None
         if mp is None:
             return web.json_response(empty)
         geo = getattr(mp, "generated_geojson", None)
-        # (Re)génère depuis la référence RTK si absent mais données de carte présentes.
-        loc = getattr(dev, "location", None)
-        rtk = getattr(loc, "RTK", None) if loc else None
-        dock = getattr(loc, "dock", None) if loc else None
+        # (Re)génère depuis la référence RTK (live ou en cache) si absent.
         needs = not geo or not (isinstance(geo, dict) and geo.get("features"))
         if needs and rtk is not None and getattr(rtk, "latitude", 0):
             with contextlib.suppress(Exception):
