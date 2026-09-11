@@ -53,8 +53,10 @@ l'autre en boucle. La bonne pratique :
 - **Carte GPS** : le pont sert une **page carte** (`/map`, Leaflet + tuiles
   OpenStreetMap, **aucune clef d'API**) et un endpoint `/position` qui donne la
   position absolue de la tondeuse (`location.device` en degrés dès qu'il y a un
-  fix RTK) et de la base RTK (`location.RTK`, en radians → degrés). Affichable
-  dans une tuile Jeedom (voir [`jeedom-widget/`](jeedom-widget/)).
+  fix RTK) et de la base RTK (`location.RTK`, en radians → degrés). Les **zones de
+  tonte** (aires, obstacles, chemins) sont synchronisées au démarrage
+  (`start_map_sync`) et servies en GeoJSON sur `/zones`, dessinées sur la carte.
+  Affichable dans une tuile Jeedom (voir [`jeedom-widget/`](jeedom-widget/)).
 
 ## Avertissement
 

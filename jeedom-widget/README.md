@@ -79,3 +79,8 @@ a un fix RTK (sinon ~0 → repli sur la base) ; `location.RTK` (la base) est en
 **radians**, converti en degrés et affiché comme repère « Base RTK ». `/position`
 renvoie `{mower, base, mower_src, raw}`. Si le device ne fournit pas de position
 absolue, renseigne `GARDEN_ANCHOR=lat,lon` (voir README principal).
+
+**Zones de tonte** : le pont synchronise la carte de la tondeuse au démarrage
+(`start_map_sync`) et sert le GeoJSON des aires/obstacles/chemins sur `/zones`
+(chaque `properties` porte le style Leaflet). La page carte les dessine
+(`L.geoJSON`) et cadre la vue sur leur emprise. Les aires apparaissent en vert.
