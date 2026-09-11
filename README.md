@@ -32,6 +32,7 @@ l'autre en boucle. La bonne pratique :
 | `POLL_INTERVAL` | `60` | intervalle de republication de l'état (s) |
 | `INCLUDE_RTK` | `false` | exposer aussi la base RTK (capteurs seuls) |
 | `HTTP_PORT` | `8099` | port du lecteur caméra FPV (page + jetons/keepalive) |
+| `BASE_PATH` | *(vide)* | sous-chemin de service derrière un reverse proxy qui **ne retire pas** le préfixe, ex. `/mammocam` → sert aussi `/mammocam/`, `/mammocam/tokens`, `/mammocam/keepalive`. Indispensable pour intégrer la tuile caméra dans un Jeedom servi en HTTPS (évite le blocage *mixed-content*) |
 | `AGORA_SDK_URL` | CDN jsdelivr | URL du SDK Agora Web chargé par le lecteur |
 | `MAMMOTION_HA_VERSION` | `0.6.4` | **doit être un vrai numéro de version** : le serveur en dérive l'en-tête App-Version et refuse le login sinon (renvoyé, à tort, comme « Account or password mismatch ») |
 

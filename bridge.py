@@ -40,6 +40,11 @@ TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "mammotion")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 INCLUDE_RTK = os.environ.get("INCLUDE_RTK", "false").lower() in ("1", "true", "yes")
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8099"))  # serveur du lecteur caméra FPV
+# Sous-chemin de service, ex. "/mammocam" quand le pont est derrière un reverse
+# proxy (NPM) qui ne retire PAS le préfixe. Le lecteur utilise des chemins
+# relatifs, donc /mammocam/tokens et /mammocam/keepalive sont servis en plus des
+# routes racine. Vide = comportement d'origine (racine seule).
+BASE_PATH = os.environ.get("BASE_PATH", "").rstrip("/")
 AGORA_SDK_URL = os.environ.get("AGORA_SDK_URL", "https://cdn.jsdelivr.net/npm/agora-rtc-sdk-ng/AgoraRTC_N-production.js")
 # Doit être un numéro de version type Mammotion-HA : le serveur dérive l'en-tête
 # App-Version (« HA,2.<x> ») et REFUSE le login sinon (renvoyé comme « Account or
@@ -172,17 +177,26 @@ class Bridge:
 
     async def start_http(self) -> None:
         app = web.Application()
-        app.add_routes([
-            web.get("/", self.http_index),
-            web.get("/player", self.http_index),
-            web.get("/tokens", self.http_tokens),
-            web.get("/keepalive", self.http_keepalive),
-        ])
+        prefixes = [""]
+        if BASE_PATH and BASE_PATH not in prefixes:
+            prefixes.append(BASE_PATH)
+        routes = []
+        for p in prefixes:
+            if p:  # servir aussi le sous-chemin sans slash final
+                routes.append(web.get(p, self.http_index))
+            routes += [
+                web.get(f"{p}/", self.http_index),
+                web.get(f"{p}/player", self.http_index),
+                web.get(f"{p}/tokens", self.http_tokens),
+                web.get(f"{p}/keepalive", self.http_keepalive),
+            ]
+        app.add_routes(routes)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
         await site.start()
-        LOGGER.info("Lecteur caméra sur http://0.0.0.0:%s/ (page) et /tokens", HTTP_PORT)
+        LOGGER.info("Lecteur caméra sur http://0.0.0.0:%s%s/ (page) et %s/tokens",
+                    HTTP_PORT, BASE_PATH, BASE_PATH or "")
 
     # ---- état → MQTT -------------------------------------------------------
     def _fields(self, name: str) -> dict[str, Any] | None:
